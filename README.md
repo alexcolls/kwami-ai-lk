@@ -1,30 +1,56 @@
 # Kwami AI LiveKit
 
-LiveKit token endpoint and agent server for Kwami AI.
+LiveKit token endpoint and cloud agent for Kwami AI.
 
 ## Quick Start
 
 ```bash
-# Install dependencies
-make install
-
 # Copy and configure environment
-cp env.template .env
+cp .env.sample .env
 # Edit .env with your credentials
 
 # Run API server (token endpoint)
+make api-install
 make api
 
-# Run agent worker (in another terminal)
+# Run agent locally (in another terminal)
+make agent-install
 make agent
 ```
 
-## Services
+## Project Structure
 
-| Service | Command | Port | Description |
-|---------|---------|------|-------------|
-| API | `make api` | 8080 | Token endpoint + health checks |
-| Agent | `make agent` | - | LiveKit voice agent worker |
+```
+kwami-ai-lk/
+├── api/                  # Token endpoint API (deploy anywhere)
+│   ├── main.py           # FastAPI entry point
+│   ├── config.py         # Settings
+│   ├── token_utils.py    # Token generation
+│   ├── routes/           # API endpoints
+│   ├── pyproject.toml
+│   └── Dockerfile
+├── agent/                # LiveKit Cloud agent
+│   ├── agent.py          # Agent entry point
+│   ├── config.py         # Kwami configuration
+│   ├── plugins.py        # STT/LLM/TTS factories
+│   ├── pyproject.toml
+│   └── livekit.toml      # LiveKit Cloud config
+├── .env                  # Shared credentials
+├── Makefile
+└── README.md
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `make api-install` | Install API dependencies |
+| `make api` | Run token API locally (http://localhost:8080) |
+| `make agent-install` | Install agent dependencies |
+| `make agent` | Run agent locally for testing |
+| `make agent-deploy` | Deploy agent to LiveKit Cloud |
+| `make lint` | Run linter on both projects |
+| `make format` | Format code in both projects |
 
 ## API Endpoints
 
@@ -47,68 +73,57 @@ curl -X POST http://localhost:8080/token \
   }'
 ```
 
-## Development
+## Deployment
+
+### API (Token Endpoint)
+
+Deploy the `api/` folder to any hosting provider:
 
 ```bash
-# Install with dev dependencies
-make dev
-
-# Run linter
-make lint
-
-# Format code
-make format
-
-# Run tests
-make test
-```
-
-## Docker
-
-```bash
-# Build images
+# Docker
 make docker-build
-
-# Start services
 make docker-up
 
-# Stop services
-make docker-down
+# Or deploy to Railway, Fly.io, Render, etc.
 ```
 
-## Project Structure
+### Agent (LiveKit Cloud)
 
+Deploy the agent to LiveKit Cloud:
+
+```bash
+cd agent
+
+# Configure your LiveKit Cloud project
+lk agent config
+
+# Deploy to LiveKit Cloud
+lk agent deploy
 ```
-kwami-ai-lk/
-├── src/kwami_lk/
-│   ├── api/           # FastAPI application
-│   │   ├── main.py    # App entry point
-│   │   └── routes/    # API endpoints
-│   ├── agent/         # LiveKit agent
-│   │   ├── kwami_agent.py
-│   │   ├── config.py
-│   │   ├── worker.py
-│   │   └── plugins/   # STT/LLM/TTS factories
-│   └── core/          # Shared utilities
-│       ├── config.py  # Settings
-│       └── livekit.py # Token generation
-├── tests/
-├── Dockerfile
-├── docker-compose.yml
-└── pyproject.toml
-```
+
+LiveKit Cloud handles scaling, lifecycle, and hosting automatically.
 
 ## Environment Variables
 
-See `env.template` for all available options.
+Create a `.env` file in the project root:
 
-Required:
-- `LIVEKIT_URL` - LiveKit server URL
-- `LIVEKIT_API_KEY` - LiveKit API key
-- `LIVEKIT_API_SECRET` - LiveKit API secret
-- `OPENAI_API_KEY` - OpenAI API key (for LLM)
-- `DEEPGRAM_API_KEY` - Deepgram API key (for STT)
-- `CARTESIA_API_KEY` - Cartesia API key (for TTS)
+```env
+# LiveKit (required)
+LIVEKIT_URL=wss://your-project.livekit.cloud
+LIVEKIT_API_KEY=your-api-key
+LIVEKIT_API_SECRET=your-api-secret
+
+# AI Providers (required for agent)
+OPENAI_API_KEY=your-openai-key
+DEEPGRAM_API_KEY=your-deepgram-key
+CARTESIA_API_KEY=your-cartesia-key
+
+# API Config (optional)
+APP_ENV=development
+DEBUG=true
+API_PORT=8080
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+```
 
 ## License
 

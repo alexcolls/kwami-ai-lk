@@ -1,75 +1,79 @@
-.PHONY: help install dev api agent lint format test clean docker-build docker-up docker-down
+.PHONY: help api agent api-install agent-install lint format clean docker-build docker-up docker-down
 
-# Default target
 help:
 	@echo "Kwami AI LiveKit - Development Commands"
 	@echo ""
-	@echo "  make install     - Install dependencies"
-	@echo "  make dev         - Install with dev dependencies"
-	@echo "  make api         - Run API server (dev mode)"
-	@echo "  make agent       - Run agent worker (dev mode)"
-	@echo "  make lint        - Run linter"
-	@echo "  make format      - Format code"
-	@echo "  make test        - Run tests"
-	@echo "  make clean       - Clean build artifacts"
+	@echo "API (Token Endpoint):"
+	@echo "  make api           - Run API server (dev mode)"
+	@echo "  make api-install   - Install API dependencies"
+	@echo ""
+	@echo "Agent (LiveKit Cloud):"
+	@echo "  make agent         - Run agent locally (dev mode)"
+	@echo "  make agent-install - Install agent dependencies"
+	@echo "  make agent-deploy  - Deploy agent to LiveKit Cloud"
+	@echo ""
+	@echo "Code Quality:"
+	@echo "  make lint          - Run linter on both projects"
+	@echo "  make format        - Format code in both projects"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make docker-build  - Build Docker images"
-	@echo "  make docker-up     - Start services"
-	@echo "  make docker-down   - Stop services"
+	@echo "  make docker-build  - Build API Docker image"
+	@echo "  make docker-up     - Start API container"
+	@echo "  make docker-down   - Stop API container"
 
 # =============================================================================
-# Development
+# API
 # =============================================================================
 
-install:
-	uv sync
-
-dev:
-	uv sync --all-extras
+api-install:
+	cd api && uv sync
 
 api:
-	uv run kwami-api
+	cd api && uv run python main.py
+
+# =============================================================================
+# Agent
+# =============================================================================
+
+agent-install:
+	cd agent && uv sync
 
 agent:
-	uv run kwami-agent
+	cd agent && uv run python agent.py dev
+
+agent-deploy:
+	cd agent && lk agent deploy
 
 # =============================================================================
 # Code Quality
 # =============================================================================
 
 lint:
-	uv run ruff check src/
+	cd api && uv run ruff check .
+	cd agent && uv run ruff check .
 
 format:
-	uv run ruff format src/
-	uv run ruff check --fix src/
-
-test:
-	uv run pytest
+	cd api && uv run ruff format . && uv run ruff check --fix .
+	cd agent && uv run ruff format . && uv run ruff check --fix .
 
 # =============================================================================
-# Docker
+# Docker (API only - agent deploys to LiveKit Cloud)
 # =============================================================================
 
 docker-build:
-	docker compose build
+	docker build -t kwami-lk-api ./api
 
 docker-up:
-	docker compose up -d
+	docker run -d --name kwami-lk-api -p 8080:8080 --env-file .env kwami-lk-api
 
 docker-down:
-	docker compose down
+	docker stop kwami-lk-api && docker rm kwami-lk-api
 
 # =============================================================================
 # Cleanup
 # =============================================================================
 
 clean:
-	rm -rf .venv/
-	rm -rf __pycache__/
-	rm -rf src/**/__pycache__/
-	rm -rf .pytest_cache/
-	rm -rf .ruff_cache/
-	rm -rf dist/
-	rm -rf *.egg-info/
+	rm -rf api/.venv api/__pycache__ api/**/__pycache__
+	rm -rf agent/.venv agent/__pycache__ agent/**/__pycache__
+	rm -rf .pytest_cache .ruff_cache
