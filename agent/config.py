@@ -33,7 +33,7 @@ class KwamiVoiceConfig:
 
     # TTS
     tts_provider: str = "cartesia"
-    tts_voice: str = "79a125e8-cd45-4c13-8a67-188112f4dd22"  # Default voice
+    tts_voice: str = "79a125e8-cd45-4c13-8a67-188112f4dd22"
     tts_model: str = "sonic"
     tts_speed: float = 1.0
 
@@ -48,7 +48,7 @@ class KwamiVoiceConfig:
     turn_detection: str = "server_vad"
 
     # Pipeline type
-    pipeline_type: str = "voice"  # voice, realtime
+    pipeline_type: str = "voice"
 
 
 @dataclass

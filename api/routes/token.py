@@ -6,7 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from kwami_lk.core.livekit import create_token
+from token_utils import create_token
+from config import settings
 
 logger = logging.getLogger("kwami-api.token")
 router = APIRouter()
@@ -50,8 +51,6 @@ async def generate_token(request: TokenRequest):
     to a LiveKit room with the specified permissions.
     """
     try:
-        from kwami_lk.core.config import settings
-
         identity = request.participant_identity or request.participant_name
 
         token = create_token(

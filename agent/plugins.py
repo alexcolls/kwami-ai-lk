@@ -2,7 +2,7 @@
 
 from livekit.plugins import cartesia, deepgram, openai, silero
 
-from kwami_lk.agent.config import KwamiVoiceConfig
+from config import KwamiVoiceConfig
 
 
 def create_stt(config: KwamiVoiceConfig):
@@ -12,7 +12,6 @@ def create_stt(config: KwamiVoiceConfig):
             model=config.stt_model,
             language=config.stt_language,
         )
-    # Default fallback
     return deepgram.STT()
 
 
@@ -23,7 +22,6 @@ def create_llm(config: KwamiVoiceConfig):
             model=config.llm_model,
             temperature=config.llm_temperature,
         )
-    # Default fallback
     return openai.LLM()
 
 
@@ -39,7 +37,6 @@ def create_tts(config: KwamiVoiceConfig):
         return openai.TTS(
             voice=config.tts_voice,
         )
-    # Default fallback
     return cartesia.TTS()
 
 

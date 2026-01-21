@@ -1,15 +1,9 @@
 """
-Kwami Agent - LiveKit Python Agent
+Kwami Agent - LiveKit Cloud Agent
 
-This agent receives configuration from the kwami-ai frontend library and
-dynamically configures itself based on the Kwami instance settings.
-
-Each Kwami instance creates a unique agent with its own:
-- Persona (personality, traits, system prompt)
-- Voice pipeline (STT, LLM, TTS configuration)
-- Tools and skills
-
-Configuration updates can be sent in real-time without reconnecting.
+Entry point for the Kwami AI agent deployed to LiveKit Cloud.
+Run locally with: uv run python agent.py dev
+Deploy with: lk agent deploy
 """
 
 import asyncio
@@ -18,27 +12,25 @@ import logging
 from typing import Any, Optional
 
 from livekit import rtc
-from livekit.agents import Agent, RunContext, function_tool
+from livekit.agents import Agent, AgentServer, AgentSession, JobContext, RunContext, function_tool, room_io
 
-from kwami_lk.agent.config import KwamiConfig
+from config import KwamiConfig
+from plugins import create_llm, create_stt, create_tts, create_vad
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("kwami-agent")
+
+server = AgentServer()
 
 
 class KwamiAgent(Agent):
-    """
-    Dynamic AI agent configured by the Kwami frontend library.
-
-    Receives configuration via data channel and updates in real-time.
-    """
+    """Dynamic AI agent configured by the Kwami frontend library."""
 
     def __init__(self, config: Optional[KwamiConfig] = None):
         self.kwami_config = config or KwamiConfig()
         self._tasks: list[asyncio.Task] = []
 
-        # Build system prompt from persona
         instructions = self._build_system_prompt()
-
         super().__init__(instructions=instructions)
 
     def _build_system_prompt(self) -> str:
@@ -47,21 +39,17 @@ class KwamiAgent(Agent):
 
         prompt_parts = []
 
-        # Base system prompt
         if persona.system_prompt:
             prompt_parts.append(persona.system_prompt)
         else:
             prompt_parts.append(f"You are {persona.name}, {persona.personality}.")
 
-        # Add traits
         if persona.traits:
             prompt_parts.append(f"\nKey traits: {', '.join(persona.traits)}")
 
-        # Add conversation style
         if persona.conversation_style:
             prompt_parts.append(f"\nConversation style: {persona.conversation_style}")
 
-        # Add response length guidance
         length_guide = {
             "short": "Keep responses brief and concise (1-2 sentences).",
             "medium": "Provide balanced responses with enough detail (2-4 sentences).",
@@ -70,7 +58,6 @@ class KwamiAgent(Agent):
         if persona.response_length in length_guide:
             prompt_parts.append(f"\n{length_guide[persona.response_length]}")
 
-        # Add emotional tone guidance
         tone_guide = {
             "neutral": "Maintain a balanced, objective tone.",
             "warm": "Express warmth and friendliness in your interactions.",
@@ -85,8 +72,6 @@ class KwamiAgent(Agent):
     async def on_enter(self):
         """Called when the agent joins the room."""
         room = self.session.room
-
-        # Register handler for config updates from frontend
         room.on("data_received", self._handle_data_message)
 
         logger.info(
@@ -107,11 +92,8 @@ class KwamiAgent(Agent):
             msg_type = message.get("type")
 
             if msg_type == "config":
-                # Initial full configuration
                 await self._apply_full_config(message)
-
             elif msg_type == "config_update":
-                # Partial configuration update
                 update_type = message.get("updateType")
                 config = message.get("config")
 
@@ -123,9 +105,7 @@ class KwamiAgent(Agent):
                     await self._update_tools(config)
                 elif update_type == "full":
                     await self._apply_full_config(config)
-
             elif msg_type == "interrupt":
-                # Handle interrupt signal
                 await self._handle_interrupt()
 
         except json.JSONDecodeError:
@@ -137,19 +117,13 @@ class KwamiAgent(Agent):
         """Apply full Kwami configuration."""
         logger.info(f"Applying full config for Kwami: {config.get('kwamiId', 'unknown')}")
 
-        # Update Kwami ID and name
         self.kwami_config.kwami_id = config.get("kwamiId", "")
         self.kwami_config.kwami_name = config.get("kwamiName", "Kwami")
 
-        # Update persona
         if "persona" in config:
             await self._update_persona(config["persona"])
-
-        # Update voice config
         if "voice" in config:
             await self._update_voice(config["voice"])
-
-        # Update tools
         if "tools" in config:
             await self._update_tools(config["tools"])
 
@@ -159,7 +133,6 @@ class KwamiAgent(Agent):
         """Update persona configuration dynamically."""
         persona = self.kwami_config.persona
 
-        # Update persona fields
         if "name" in persona_config:
             persona.name = persona_config["name"]
         if "personality" in persona_config:
@@ -177,7 +150,6 @@ class KwamiAgent(Agent):
         if "emotionalTone" in persona_config:
             persona.emotional_tone = persona_config["emotionalTone"]
 
-        # Rebuild and update instructions
         new_instructions = self._build_system_prompt()
         await self.update_instructions(new_instructions)
 
@@ -187,7 +159,6 @@ class KwamiAgent(Agent):
         """Update voice pipeline configuration dynamically."""
         voice = self.kwami_config.voice
 
-        # Update STT config
         if "stt" in voice_config:
             stt = voice_config["stt"]
             if "provider" in stt:
@@ -197,7 +168,6 @@ class KwamiAgent(Agent):
             if "language" in stt:
                 voice.stt_language = stt["language"]
 
-        # Update LLM config
         if "llm" in voice_config:
             llm_cfg = voice_config["llm"]
             if "provider" in llm_cfg:
@@ -207,7 +177,6 @@ class KwamiAgent(Agent):
             if "temperature" in llm_cfg:
                 voice.llm_temperature = llm_cfg["temperature"]
 
-        # Update TTS config
         if "tts" in voice_config:
             tts = voice_config["tts"]
             if "provider" in tts:
@@ -219,7 +188,6 @@ class KwamiAgent(Agent):
             if "speed" in tts:
                 voice.tts_speed = tts["speed"]
 
-        # Update VAD config
         if "vad" in voice_config:
             vad = voice_config["vad"]
             if "provider" in vad:
@@ -227,7 +195,6 @@ class KwamiAgent(Agent):
             if "threshold" in vad:
                 voice.vad_threshold = vad["threshold"]
 
-        # Update enhancements
         if "enhancements" in voice_config:
             enh = voice_config["enhancements"]
             if "noiseCancellation" in enh:
@@ -235,7 +202,6 @@ class KwamiAgent(Agent):
             if "turnDetection" in enh:
                 voice.turn_detection = enh["turnDetection"]["mode"]
 
-        # Note: Some voice changes may require session restart
         logger.info(f"🎙️ Updated voice config: LLM={voice.llm_model}, TTS={voice.tts_voice}")
 
     async def _update_tools(self, tools_config: list):
@@ -247,17 +213,9 @@ class KwamiAgent(Agent):
         """Handle interrupt signal from frontend."""
         logger.info("⚡ Interrupt received from frontend")
 
-    # -------------------------------------------------------------------------
-    # BUILT-IN TOOLS
-    # -------------------------------------------------------------------------
-
     @function_tool()
     async def get_kwami_info(self, context: RunContext) -> dict[str, Any]:
-        """Get information about this Kwami instance.
-
-        Returns:
-            Information about the current Kwami agent
-        """
+        """Get information about this Kwami instance."""
         return {
             "kwami_id": self.kwami_config.kwami_id,
             "kwami_name": self.kwami_config.kwami_name,
@@ -266,3 +224,37 @@ class KwamiAgent(Agent):
                 "personality": self.kwami_config.persona.personality,
             },
         }
+
+
+@server.rtc_session()
+async def kwami_session(ctx: JobContext):
+    """Main entry point for Kwami agent sessions."""
+    logger.info(f"🚀 Kwami session starting in room: {ctx.room.name}")
+
+    config = KwamiConfig()
+    agent = KwamiAgent(config)
+
+    session = AgentSession(
+        stt=create_stt(config.voice),
+        llm=create_llm(config.voice),
+        tts=create_tts(config.voice),
+        vad=create_vad(config.voice),
+    )
+
+    await session.start(
+        agent=agent,
+        room=ctx.room,
+        room_options=room_io.RoomOptions(
+            audio_input=True,
+            audio_output=True,
+            noise_cancellation=(
+                room_io.NoiseFilter.BVC if config.voice.noise_cancellation else None
+            ),
+        ),
+    )
+
+    logger.info(f"✅ Kwami session started for room: {ctx.room.name}")
+
+
+if __name__ == "__main__":
+    server.run()

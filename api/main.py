@@ -7,8 +7,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from kwami_lk.api.routes import health, token
-from kwami_lk.core.config import settings
+from routes import health, token
+from config import settings
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +28,6 @@ async def lifespan(app: FastAPI):
     logger.info("👋 Shutting down...")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Kwami AI LiveKit API",
     description="Token endpoint and configuration API for Kwami AI agents",
@@ -38,7 +37,6 @@ app = FastAPI(
     redoc_url="/redoc" if not settings.is_production else None,
 )
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -47,7 +45,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(health.router, tags=["Health"])
 app.include_router(token.router, prefix="/token", tags=["Token"])
 
@@ -55,7 +52,7 @@ app.include_router(token.router, prefix="/token", tags=["Token"])
 def run():
     """Run the API server."""
     uvicorn.run(
-        "kwami_lk.api.main:app",
+        "main:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=settings.debug,

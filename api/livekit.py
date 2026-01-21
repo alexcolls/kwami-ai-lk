@@ -4,7 +4,7 @@ from datetime import timedelta
 
 from livekit.api import AccessToken, VideoGrants
 
-from kwami_lk.core.config import settings
+from config import settings
 
 
 def create_token(
@@ -45,7 +45,6 @@ def create_token(
     identity = participant_identity or participant_name
     token_ttl = ttl or timedelta(hours=6)
 
-    # Create video grants
     grants = VideoGrants(
         room=room_name,
         room_join=room_join,
@@ -58,7 +57,6 @@ def create_token(
         agent=agent,
     )
 
-    # Create and sign token
     token = AccessToken(
         api_key=settings.livekit_api_key,
         api_secret=settings.livekit_api_secret,
