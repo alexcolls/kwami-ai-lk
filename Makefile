@@ -41,6 +41,9 @@ agent-install:
 agent:
 	cd agent && uv run python agent.py dev
 
+agent-create:
+	cd agent && lk agent create .
+
 agent-deploy:
 	cd agent && lk agent deploy
 
