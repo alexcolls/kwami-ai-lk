@@ -102,6 +102,234 @@ async def get_user_facts(user_id: str, client: AsyncZep = Depends(get_zep_client
         logger.error(f"Failed to fetch facts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.delete("/{user_id}")
+async def delete_user_memory(user_id: str, client: AsyncZep = Depends(get_zep_client)):
+    """Delete all memory for a user (user, threads, and graph data).
+    
+    This is a destructive operation that removes:
+    - All threads/sessions associated with the user
+    - The user's knowledge graph (nodes and edges)
+    - The user record itself
+    
+    Use with caution - this cannot be undone.
+    """
+    logger.info(f"🗑️ Deleting all memory for user: {user_id}")
+    deleted = {"threads": 0, "user": False, "errors": []}
+    
+    try:
+        # 1. Delete all threads belonging to this user
+        try:
+            threads_response = await client.thread.list_all(page_size=100)
+            if threads_response:
+                threads_list = threads_response.threads if hasattr(threads_response, 'threads') else threads_response
+                for t in (threads_list or []):
+                    thread_id = t.thread_id if hasattr(t, 'thread_id') else (t.uuid if hasattr(t, 'uuid') else None)
+                    thread_user = t.user_id if hasattr(t, 'user_id') else None
+                    
+                    # Delete threads that belong to this user
+                    if thread_user == user_id or (thread_id and user_id in str(thread_id)):
+                        try:
+                            await client.thread.delete(thread_id=thread_id)
+                            deleted["threads"] += 1
+                            logger.info(f"🗑️ Deleted thread: {thread_id}")
+                        except Exception as e:
+                            deleted["errors"].append(f"Failed to delete thread {thread_id}: {str(e)}")
+        except Exception as e:
+            deleted["errors"].append(f"Failed to list threads: {str(e)}")
+        
+        # 2. Delete the user (this also deletes associated graph data in Zep)
+        try:
+            await client.user.delete(user_id=user_id)
+            deleted["user"] = True
+            logger.info(f"🗑️ Deleted user: {user_id}")
+        except Exception as e:
+            error_msg = str(e)
+            if "404" in error_msg:
+                deleted["errors"].append(f"User {user_id} not found")
+            else:
+                deleted["errors"].append(f"Failed to delete user: {error_msg}")
+        
+        logger.info(f"🗑️ Deletion complete: {deleted['threads']} threads, user={deleted['user']}")
+        return {
+            "success": deleted["user"] or deleted["threads"] > 0,
+            "user_id": user_id,
+            "deleted_threads": deleted["threads"],
+            "deleted_user": deleted["user"],
+            "errors": deleted["errors"] if deleted["errors"] else None,
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to delete user memory: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{user_id}/messages")
+async def get_user_messages(user_id: str, limit: int = 100, client: AsyncZep = Depends(get_zep_client)):
+    """Get conversation messages for a user from their threads/sessions.
+    
+    This retrieves actual conversation history stored in Zep threads,
+    which is where chat messages are stored via memory.add().
+    """
+    logger.info(f"💬 Fetching messages for user: {user_id}")
+    try:
+        messages = []
+        sessions = []
+        
+        # Get all threads and find ones belonging to this user
+        try:
+            threads_response = await client.thread.list_all(page_size=50)
+            if threads_response:
+                threads_list = threads_response.threads if hasattr(threads_response, 'threads') else threads_response
+                for t in (threads_list or []):
+                    thread_id = t.thread_id if hasattr(t, 'thread_id') else (t.uuid if hasattr(t, 'uuid') else None)
+                    thread_user = t.user_id if hasattr(t, 'user_id') else None
+                    
+                    # Check if thread belongs to this user
+                    if thread_user == user_id or (thread_id and user_id in str(thread_id)):
+                        sessions.append({
+                            "thread_id": thread_id,
+                            "user_id": thread_user,
+                            "created_at": str(t.created_at) if hasattr(t, 'created_at') and t.created_at else None,
+                        })
+                        
+                        # Get messages from this thread
+                        try:
+                            msgs_response = await client.thread.get_messages(
+                                thread_id=thread_id,
+                                limit=limit,
+                            )
+                            if msgs_response and msgs_response.messages:
+                                for msg in msgs_response.messages:
+                                    messages.append({
+                                        "uuid": msg.uuid if hasattr(msg, 'uuid') else None,
+                                        "content": msg.content if hasattr(msg, 'content') else None,
+                                        "role": msg.role if hasattr(msg, 'role') else (msg.role_type if hasattr(msg, 'role_type') else None),
+                                        "role_type": msg.role_type if hasattr(msg, 'role_type') else None,
+                                        "created_at": str(msg.created_at) if hasattr(msg, 'created_at') and msg.created_at else None,
+                                        "thread_id": thread_id,
+                                    })
+                        except Exception as msg_err:
+                            logger.warning(f"💬 Failed to get messages from thread {thread_id}: {msg_err}")
+        except Exception as e:
+            logger.warning(f"💬 thread.list_all failed: {e}")
+        
+        # Sort messages by created_at (newest first)
+        messages.sort(key=lambda x: x.get('created_at') or '', reverse=True)
+        
+        logger.info(f"💬 Found {len(messages)} messages across {len(sessions)} sessions")
+        return {
+            "messages": messages[:limit],  # Limit total messages
+            "message_count": len(messages),
+            "sessions": sessions,
+            "session_count": len(sessions),
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch messages: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{user_id}/edges")
+async def get_user_edges(user_id: str, limit: int = 50, client: AsyncZep = Depends(get_zep_client)):
+    """Get all edges (facts with temporal data) for a user.
+    
+    Edges represent facts/relationships in the knowledge graph. Each edge includes:
+    - fact: The relationship description
+    - valid_at: When the fact became true
+    - invalid_at: When the fact became false (if superseded)
+    - created_at: When Zep learned the fact
+    - expired_at: When Zep learned the fact was no longer true
+    """
+    logger.info(f"🔗 Fetching edges for user: {user_id}")
+    try:
+        edges = []
+        
+        # Get edges directly from the graph API
+        try:
+            edges_response = await client.graph.edge.get_by_user_id(user_id=user_id, limit=limit)
+            if edges_response:
+                for edge in edges_response:
+                    edges.append({
+                        "uuid": edge.uuid_ if hasattr(edge, 'uuid_') else (edge.uuid if hasattr(edge, 'uuid') else None),
+                        "fact": edge.fact if hasattr(edge, 'fact') else None,
+                        "name": edge.name if hasattr(edge, 'name') else None,
+                        "source_node_uuid": edge.source_node_uuid if hasattr(edge, 'source_node_uuid') else None,
+                        "target_node_uuid": edge.target_node_uuid if hasattr(edge, 'target_node_uuid') else None,
+                        # Temporal data
+                        "created_at": str(edge.created_at) if hasattr(edge, 'created_at') and edge.created_at else None,
+                        "valid_at": str(edge.valid_at) if hasattr(edge, 'valid_at') and edge.valid_at else None,
+                        "invalid_at": str(edge.invalid_at) if hasattr(edge, 'invalid_at') and edge.invalid_at else None,
+                        "expired_at": str(edge.expired_at) if hasattr(edge, 'expired_at') and edge.expired_at else None,
+                    })
+        except Exception as e:
+            logger.warning(f"🔗 graph.edge.get_by_user_id failed: {e}")
+            # Fallback to graph.search
+            try:
+                facts_response = await client.graph.search(
+                    user_id=user_id,
+                    query="*",
+                    scope="edges",
+                    limit=limit,
+                )
+                if facts_response and facts_response.edges:
+                    for edge in facts_response.edges:
+                        edges.append({
+                            "uuid": edge.uuid_ if hasattr(edge, 'uuid_') else (edge.uuid if hasattr(edge, 'uuid') else None),
+                            "fact": edge.fact if hasattr(edge, 'fact') else None,
+                            "name": edge.name if hasattr(edge, 'name') else None,
+                            "source_node_uuid": edge.source_node_uuid if hasattr(edge, 'source_node_uuid') else None,
+                            "target_node_uuid": edge.target_node_uuid if hasattr(edge, 'target_node_uuid') else None,
+                            "created_at": str(edge.created_at) if hasattr(edge, 'created_at') and edge.created_at else None,
+                            "valid_at": str(edge.valid_at) if hasattr(edge, 'valid_at') and edge.valid_at else None,
+                            "invalid_at": str(edge.invalid_at) if hasattr(edge, 'invalid_at') and edge.invalid_at else None,
+                            "expired_at": str(edge.expired_at) if hasattr(edge, 'expired_at') and edge.expired_at else None,
+                        })
+            except Exception as search_err:
+                logger.warning(f"🔗 Fallback graph.search also failed: {search_err}")
+        
+        logger.info(f"🔗 Found {len(edges)} edges")
+        return {"edges": edges, "count": len(edges)}
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch edges: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{user_id}/nodes")
+async def get_user_nodes(user_id: str, limit: int = 50, client: AsyncZep = Depends(get_zep_client)):
+    """Get all nodes (entities with summaries) for a user.
+    
+    Nodes represent entities in the knowledge graph. Each node includes:
+    - name: The entity name
+    - summary: AI-generated overview of the entity
+    - labels: Type categorization
+    """
+    logger.info(f"🔵 Fetching nodes for user: {user_id}")
+    try:
+        nodes = []
+        
+        try:
+            nodes_response = await client.graph.node.get_by_user_id(user_id=user_id, limit=limit)
+            if nodes_response:
+                for node in nodes_response:
+                    nodes.append({
+                        "uuid": node.uuid_ if hasattr(node, 'uuid_') else (node.uuid if hasattr(node, 'uuid') else None),
+                        "name": node.name if hasattr(node, 'name') else None,
+                        "summary": node.summary if hasattr(node, 'summary') else None,
+                        "labels": list(node.labels) if hasattr(node, 'labels') and node.labels else [],
+                        "created_at": str(node.created_at) if hasattr(node, 'created_at') and node.created_at else None,
+                    })
+        except Exception as e:
+            logger.warning(f"🔵 graph.node.get_by_user_id failed: {e}")
+        
+        logger.info(f"🔵 Found {len(nodes)} nodes")
+        return {"nodes": nodes, "count": len(nodes)}
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch nodes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{user_id}/graph")
 async def get_memory_graph(user_id: str, limit: int = 50, client: AsyncZep = Depends(get_zep_client)):
     """Get the knowledge graph representation of the user's memory from Zep."""

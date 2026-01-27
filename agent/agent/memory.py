@@ -160,7 +160,12 @@ class KwamiMemory:
             return False
 
     async def _ensure_user_exists(self) -> None:
-        """Create user in Zep if it doesn't exist."""
+        """Create user in Zep if it doesn't exist.
+        
+        Note: The Zep "user" represents the HUMAN user, not the AI assistant.
+        The kwami_name is stored in metadata for reference but NOT as the user's
+        first_name, which would confuse Zep's entity extraction.
+        """
         try:
             await self._client.user.get(self._user_id)
             logger.debug(f"User {self._user_id} already exists")
@@ -171,10 +176,12 @@ class KwamiMemory:
                     user_id=self._user_id,
                     metadata={
                         "kwami_id": self.kwami_id,
-                        "kwami_name": self.kwami_name,
+                        "assistant_name": self.kwami_name,  # AI assistant name (for reference only)
                         "created_at": datetime.utcnow().isoformat(),
                     },
-                    first_name=self.kwami_name,
+                    # Don't set first_name to kwami_name - that would confuse Zep's
+                    # entity extraction since the "user" should be the human, not the AI
+                    first_name="User",
                 )
                 logger.info(f"Created Zep user: {self._user_id}")
             except Exception as e:
