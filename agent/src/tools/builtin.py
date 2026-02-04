@@ -5,40 +5,19 @@ from typing import Any, Dict
 from livekit.agents import RunContext, function_tool
 
 from ..utils.logging import get_logger
+from ..constants import (
+    CartesiaVoices,
+    LANGUAGE_GREETINGS,
+    TTSProviders,
+)
 
 logger = get_logger("tools")
-
-
-# Cartesia voice name to ID mapping
-CARTESIA_VOICE_MAP = {
-    "british lady": "79a125e8-cd45-4c13-8a67-188112f4dd22",
-    "sophia": "79a125e8-cd45-4c13-8a67-188112f4dd22",
-    "california girl": "c2ac25f9-ecc4-4f56-9095-651354df60c0",
-    "reading lady": "b7d50908-b17c-442d-ad8d-810c63997ed9",
-    "newsman": "a167e0f3-df7e-4d52-a9c3-f949145efdab",
-    "blake": "a167e0f3-df7e-4d52-a9c3-f949145efdab",
-    "commercial man": "63ff761f-c1e8-414b-b969-d1833d1c870c",
-    "friendly sidekick": "421b3369-f63f-4b03-8980-37a44df1d4e8",
-}
-
-# Language-specific greetings
-LANGUAGE_GREETINGS = {
-    "en": "Language changed to English. How can I help you?",
-    "es": "Idioma cambiado a espanol. Como puedo ayudarte?",
-    "fr": "Langue changee en francais. Comment puis-je vous aider?",
-    "de": "Sprache auf Deutsch geandert. Wie kann ich Ihnen helfen?",
-    "it": "Lingua cambiata in italiano. Come posso aiutarti?",
-    "pt": "Idioma alterado para portugues. Como posso ajuda-lo?",
-    "ja": "Language changed to Japanese. How can I help you?",
-    "ko": "Language changed to Korean. How can I help you?",
-    "zh": "Language changed to Chinese. How can I help you?",
-}
 
 
 def _is_elevenlabs_tts(tts: Any) -> bool:
     """Check if TTS provider is ElevenLabs."""
     provider = getattr(tts, "provider", "").lower()
-    return provider == "elevenlabs" or "elevenlabs" in type(tts).__module__
+    return provider == TTSProviders.ELEVENLABS or "elevenlabs" in type(tts).__module__
 
 
 class AgentToolsMixin:
@@ -87,7 +66,7 @@ class AgentToolsMixin:
                 return "Unable to change voice - TTS not available"
             
             # Check if it's a known name and convert to ID
-            voice_id = CARTESIA_VOICE_MAP.get(voice_name.lower(), voice_name)
+            voice_id = CartesiaVoices.NAME_MAP.get(voice_name.lower(), voice_name)
             
             # Different TTS providers use different parameter names
             if _is_elevenlabs_tts(self.session.tts):
