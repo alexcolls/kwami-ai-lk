@@ -9,6 +9,7 @@ Provides comprehensive TTS creation with:
 """
 
 import os
+from typing import Optional
 
 from livekit.agents import inference
 from livekit.plugins import cartesia, openai, deepgram
@@ -25,118 +26,19 @@ except ImportError:
 
 from ..config import KwamiVoiceConfig
 from ..utils.logging import get_logger
+from ..constants import (
+    TTSProviders,
+    OpenAIVoices,
+    OpenAIModels,
+    ElevenLabsVoices,
+    CartesiaVoices,
+    DeepgramVoices,
+    GoogleVoices,
+    EnvVars,
+)
+from ..exceptions import VoiceProviderError, ConfigurationError
 
 logger = get_logger("tts")
-
-
-# =============================================================================
-# Voice ID Constants
-# =============================================================================
-
-class OpenAIVoices:
-    """OpenAI TTS voice IDs. Note: ballad/verse are Realtime-only."""
-    ALLOY = "alloy"       # Neutral
-    ASH = "ash"           # Male
-    CORAL = "coral"       # Female
-    ECHO = "echo"         # Male
-    FABLE = "fable"       # Neutral
-    NOVA = "nova"         # Female
-    ONYX = "onyx"         # Male
-    SAGE = "sage"         # Female
-    SHIMMER = "shimmer"   # Female
-    
-    ALL = {ALLOY, ASH, CORAL, ECHO, FABLE, NOVA, ONYX, SAGE, SHIMMER}
-    DEFAULT = NOVA
-
-
-class ElevenLabsVoices:
-    """ElevenLabs voice IDs (premade voices)."""
-    RACHEL = "21m00Tcm4TlvDq8ikWAM"
-    DOMI = "AZnzlk1XvdvUeBnXmlld"
-    BELLA = "EXAVITQu4vr4xnSDxMaL"
-    ELLI = "MF3mGyEYCl7XYWbV9V6O"
-    JOSH = "TxGEqnHWrfWFTfGW9XjX"
-    ARNOLD = "VR6AewLTigWG4xSOukaG"
-    ADAM = "pNInz6obpgDQGcFmaJgB"
-    SAM = "yoZ06aMxZJJ28mfd3POQ"
-    DANIEL = "onwK4e9ZLuTAKqWW03F9"
-    CHARLOTTE = "XB0fDUnXU5powFXDhCwa"
-    LILY = "pFZP5JQG7iQjIQuC4Bku"
-    CALLUM = "N2lVS1w4EtoT3dr4eOWO"
-    CHARLIE = "IKne3meq5aSn9XLyUdCD"
-    GEORGE = "JBFqnCBsd6RMkjVDRZzb"
-    LIAM = "TX3LPaxmHKxFdv7VOQHJ"
-    WILL = "bIHbv24MWmeRgasZH58o"
-    JESSICA = "cgSgspJ2msm6clMCkdW9"
-    ERIC = "cjVigY5qzO86Huf0OWal"
-    CHRIS = "iP95p4xoKVk53GoZ742B"
-    BRIAN = "nPczCjzI2devNBz1zQrb"
-    
-    ALL = {RACHEL, DOMI, BELLA, ELLI, JOSH, ARNOLD, ADAM, SAM, DANIEL,
-           CHARLOTTE, LILY, CALLUM, CHARLIE, GEORGE, LIAM, WILL,
-           JESSICA, ERIC, CHRIS, BRIAN}
-    DEFAULT = RACHEL
-
-
-class CartesiaVoices:
-    """Cartesia voice IDs (UUID format)."""
-    # English - Female
-    BRITISH_LADY = "79a125e8-cd45-4c13-8a67-188112f4dd22"
-    JACQUELINE = "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"
-    CALIFORNIA_GIRL = "c2ac25f9-ecc4-4f56-9095-651354df60c0"
-    READING_LADY = "b7d50908-b17c-442d-ad8d-810c63997ed9"
-    SARAH = "00a77add-48d5-4ef6-8157-71e5437b282d"
-    MIDWESTERN_WOMAN = "ed81fd13-2016-4a49-8fe3-c0d2761695fc"
-    MARIA = "5619d38c-cf51-4d8e-9575-48f61a280413"
-    COMMERCIAL_LADY = "f146dcec-e481-45be-8ad2-96e1e40e7f32"
-    # English - Male
-    NEWSMAN = "a167e0f3-df7e-4d52-a9c3-f949145efdab"
-    COMMERCIAL_MAN = "63ff761f-c1e8-414b-b969-d1833d1c870c"
-    FRIENDLY_SIDEKICK = "421b3369-f63f-4b03-8980-37a44df1d4e8"
-    SOUTHERN_MAN = "638efaaa-4d0c-442e-b701-3fae16aad012"
-    WISE_MAN = "fb26447f-308b-471e-8b00-8e9f04284eb5"
-    BRITISH_NARRATOR = "2ee87190-8f84-4925-97da-e52547f9462c"
-    
-    DEFAULT = BRITISH_LADY
-
-
-class DeepgramVoices:
-    """Deepgram Aura voice IDs."""
-    # Female
-    ASTERIA = "asteria"
-    LUNA = "luna"
-    STELLA = "stella"
-    ATHENA = "athena"
-    HERA = "hera"
-    # Male
-    ORION = "orion"
-    ARCAS = "arcas"
-    PERSEUS = "perseus"
-    ANGUS = "angus"
-    ORPHEUS = "orpheus"
-    HELIOS = "helios"
-    ZEUS = "zeus"
-    
-    ALL = {ASTERIA, LUNA, STELLA, ATHENA, HERA, ORION, ARCAS, 
-           PERSEUS, ANGUS, ORPHEUS, HELIOS, ZEUS}
-    DEFAULT = ASTERIA
-
-
-class GoogleVoices:
-    """Google Cloud TTS voice IDs."""
-    STUDIO_O = "en-US-Studio-O"      # Female
-    STUDIO_Q = "en-US-Studio-Q"      # Male
-    NEURAL2_A = "en-US-Neural2-A"    # Male
-    NEURAL2_C = "en-US-Neural2-C"    # Female
-    NEURAL2_D = "en-US-Neural2-D"    # Male
-    NEURAL2_E = "en-US-Neural2-E"    # Female
-    NEURAL2_F = "en-US-Neural2-F"    # Female
-    NEURAL2_G = "en-US-Neural2-G"    # Female
-    NEURAL2_H = "en-US-Neural2-H"    # Female
-    NEURAL2_I = "en-US-Neural2-I"    # Male
-    NEURAL2_J = "en-US-Neural2-J"    # Male
-    
-    DEFAULT = STUDIO_O
 
 
 # =============================================================================
@@ -146,11 +48,11 @@ class GoogleVoices:
 def _check_api_key(provider: str) -> bool:
     """Check if the required API key is set for a provider."""
     key_map = {
-        "openai": ["OPENAI_API_KEY"],
-        "elevenlabs": ["ELEVEN_API_KEY", "ELEVENLABS_API_KEY"],  # Accept both variants
-        "cartesia": ["CARTESIA_API_KEY"],
-        "deepgram": ["DEEPGRAM_API_KEY"],
-        "google": ["GOOGLE_APPLICATION_CREDENTIALS"],
+        TTSProviders.OPENAI: EnvVars.OPENAI,
+        TTSProviders.ELEVENLABS: EnvVars.ELEVENLABS,
+        TTSProviders.CARTESIA: EnvVars.CARTESIA,
+        TTSProviders.DEEPGRAM: EnvVars.DEEPGRAM,
+        TTSProviders.GOOGLE: EnvVars.GOOGLE,
     }
     env_vars = key_map.get(provider, [])
     if not env_vars:
@@ -160,6 +62,8 @@ def _check_api_key(provider: str) -> bool:
     for env_var in env_vars:
         if os.getenv(env_var):
             return True
+    
+    # Check for plural constants list just in case
     
     logger.warning(f"⚠️ {' or '.join(env_vars)} not set for {provider} TTS")
     return False
@@ -179,7 +83,7 @@ def create_tts(config: KwamiVoiceConfig):
         TTS instance for the specified provider.
         
     Raises:
-        ValueError: If provider is invalid and no fallback available.
+        VoiceProviderError: If creation fails and fallback is not possible/desired.
     """
     provider = config.tts_provider.lower()
     
@@ -192,19 +96,19 @@ def create_tts(config: KwamiVoiceConfig):
     _check_api_key(provider)
     
     try:
-        if provider == "openai":
+        if provider == TTSProviders.OPENAI:
             return _create_openai_tts(config)
         
-        elif provider == "elevenlabs":
+        elif provider == TTSProviders.ELEVENLABS:
             return _create_elevenlabs_tts(config)
         
-        elif provider == "cartesia":
+        elif provider == TTSProviders.CARTESIA:
             return _create_cartesia_tts(config)
         
-        elif provider == "deepgram":
+        elif provider == TTSProviders.DEEPGRAM:
             return _create_deepgram_tts(config)
         
-        elif provider == "google":
+        elif provider == TTSProviders.GOOGLE:
             return _create_google_tts(config)
         
         else:
@@ -220,27 +124,25 @@ def create_tts(config: KwamiVoiceConfig):
 # Provider-Specific Factories
 # =============================================================================
 
-OPENAI_TTS_MODELS = {"tts-1", "tts-1-hd", "gpt-4o-mini-tts"}
-
 def _create_openai_tts(config: KwamiVoiceConfig):
     """Create OpenAI TTS with voice and model validation."""
     voice = config.tts_voice or OpenAIVoices.DEFAULT
-    model = config.tts_model or "tts-1"
+    model = config.tts_model or OpenAIModels.TTS_1
     
-    # Validate model - must be an OpenAI TTS model
-    if model not in OPENAI_TTS_MODELS:
+    # Validate model
+    if model not in OpenAIModels.ALL_TTS:
         logger.warning(
             f"Model '{model}' not supported by OpenAI TTS. "
-            f"Using 'tts-1'. Valid: {', '.join(sorted(OPENAI_TTS_MODELS))}"
+            f"Using '{OpenAIModels.TTS_1}'. Valid: {', '.join(sorted(OpenAIModels.ALL_TTS))}"
         )
-        model = "tts-1"
+        model = OpenAIModels.TTS_1
     
     # Validate voice
-    if voice not in OpenAIVoices.ALL:
+    if voice not in OpenAIVoices.STANDARD:
         logger.warning(
             f"Voice '{voice}' not supported by OpenAI TTS. "
             f"Using '{OpenAIVoices.DEFAULT}'. "
-            f"Valid: {', '.join(sorted(OpenAIVoices.ALL))}"
+            f"Valid: {', '.join(sorted(OpenAIVoices.STANDARD))}"
         )
         voice = OpenAIVoices.DEFAULT
     
@@ -271,6 +173,10 @@ def _create_elevenlabs_tts(config: KwamiVoiceConfig):
 def _create_cartesia_tts(config: KwamiVoiceConfig):
     """Create Cartesia TTS."""
     voice = config.tts_voice or CartesiaVoices.DEFAULT
+    
+    # Check for friendly name mapping
+    if voice.lower() in CartesiaVoices.NAME_MAP:
+        voice = CartesiaVoices.NAME_MAP[voice.lower()]
     
     # Cartesia uses UUID format voice IDs
     if voice and len(voice) < 30 and "-" not in voice:
@@ -326,12 +232,12 @@ def _create_google_tts(config: KwamiVoiceConfig):
 
 def get_available_providers() -> list[str]:
     """Get list of available TTS providers based on installed plugins."""
-    providers = ["openai", "deepgram", "cartesia"]
+    providers = [TTSProviders.OPENAI, TTSProviders.DEEPGRAM, TTSProviders.CARTESIA]
     
     if elevenlabs is not None:
-        providers.append("elevenlabs")
+        providers.append(TTSProviders.ELEVENLABS)
     if google is not None:
-        providers.append("google")
+        providers.append(TTSProviders.GOOGLE)
     
     return providers
 
@@ -340,15 +246,15 @@ def get_voices_for_provider(provider: str) -> list[str]:
     """Get list of valid voice IDs for a provider."""
     provider = provider.lower()
     
-    if provider == "openai":
-        return list(OpenAIVoices.ALL)
-    elif provider == "elevenlabs":
+    if provider == TTSProviders.OPENAI:
+        return list(OpenAIVoices.STANDARD)
+    elif provider == TTSProviders.ELEVENLABS:
         return list(ElevenLabsVoices.ALL)
-    elif provider == "deepgram":
+    elif provider == TTSProviders.DEEPGRAM:
         return list(DeepgramVoices.ALL)
-    elif provider == "cartesia":
-        return [CartesiaVoices.BRITISH_LADY, CartesiaVoices.NEWSMAN]  # Just examples
-    elif provider == "google":
+    elif provider == TTSProviders.CARTESIA:
+        return list(CartesiaVoices.NAME_MAP.keys())  # Return friendly names
+    elif provider == TTSProviders.GOOGLE:
         return [GoogleVoices.STUDIO_O, GoogleVoices.STUDIO_Q]
     
     return []
@@ -359,11 +265,11 @@ def get_default_voice(provider: str) -> str:
     provider = provider.lower()
     
     defaults = {
-        "openai": OpenAIVoices.DEFAULT,
-        "elevenlabs": ElevenLabsVoices.DEFAULT,
-        "cartesia": CartesiaVoices.DEFAULT,
-        "deepgram": DeepgramVoices.DEFAULT,
-        "google": GoogleVoices.DEFAULT,
+        TTSProviders.OPENAI: OpenAIVoices.DEFAULT,
+        TTSProviders.ELEVENLABS: ElevenLabsVoices.DEFAULT,
+        TTSProviders.CARTESIA: CartesiaVoices.DEFAULT,
+        TTSProviders.DEEPGRAM: DeepgramVoices.DEFAULT,
+        TTSProviders.GOOGLE: GoogleVoices.DEFAULT,
     }
     
     return defaults.get(provider, "default")
