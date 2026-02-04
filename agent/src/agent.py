@@ -224,8 +224,10 @@ class KwamiAgent(Agent, AgentToolsMixin):
         )
         user_name = None
         is_returning_user = False
+        recent_context_summary = None
+        recent_topics = []
         
-        # Try to get user's name from memory
+        # Try to get user's name and recent context from memory
         if self._memory and self._memory.is_initialized:
             try:
                 # First try the dedicated method
@@ -233,7 +235,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
                 if user_name:
                     logger.info(f"Found user name via get_user_name(): {user_name}")
                 
-                # Get context for returning user detection
+                # Get context for returning user detection and recent topics
                 context = await self._memory.get_context()
                 if context.recent_messages or context.facts:
                     is_returning_user = True
@@ -241,6 +243,18 @@ class KwamiAgent(Agent, AgentToolsMixin):
                         f"Returning user detected "
                         f"(messages: {len(context.recent_messages)}, facts: {len(context.facts)})"
                     )
+                    
+                    # Extract recent topics/context for personalized greeting
+                    if context.summary:
+                        recent_context_summary = context.summary
+                    
+                    # Get interesting facts to potentially reference
+                    if context.facts:
+                        # Filter for recent/interesting facts (exclude name-related facts)
+                        for fact in context.facts[:5]:  # Look at top 5 most relevant
+                            fact_lower = fact.lower()
+                            if not any(skip in fact_lower for skip in ['name is', 'called', 'i am', 'i\'m']):
+                                recent_topics.append(fact)
                 
                 # If we didn't find name yet, try extracting from facts directly
                 if not user_name and context.facts:
@@ -262,21 +276,49 @@ class KwamiAgent(Agent, AgentToolsMixin):
             except Exception as e:
                 logger.warning(f"Could not extract user info from memory: {e}")
         
-        # Build natural greeting instructions
+        # Build natural greeting instructions based on what we know
         if user_name:
-            return (
-                f"Greet {user_name} casually and naturally, like you're happy to see them again. "
-                f"Something like 'Hey {user_name}, how's it going?' or 'What's up {user_name}?' "
-                "Keep it short, friendly, and chill. Don't be formal or robotic. "
-                "Don't repeat the same greeting every time - vary it naturally."
-            )
+            # Returning user with known name - make it personal and contextual
+            if recent_topics:
+                # We have recent topics to reference
+                topics_str = "; ".join(recent_topics[:3])
+                return (
+                    f"Greet {user_name} warmly by name, like you're happy to see them again. "
+                    f"Reference something from your recent conversations naturally. "
+                    f"Here's what you remember about recent topics: {topics_str}. "
+                    f"Ask a casual follow-up question about one of these topics, or just ask how something is going. "
+                    f"Examples: 'Hey {user_name}! How did that [project/thing] turn out?' or "
+                    f"'What's up {user_name}? Been thinking about [topic] lately?' "
+                    "Keep it short, friendly, and chill. Don't be formal or robotic. "
+                    "Pick ONE topic and ask about it naturally - don't list everything you remember."
+                )
+            elif recent_context_summary:
+                # We have a summary but no specific topics
+                return (
+                    f"Greet {user_name} warmly by name, like you're happy to see them again. "
+                    f"Here's a summary of your past conversations: {recent_context_summary}. "
+                    f"Ask a casual follow-up about something relevant, or just check in on how things are going. "
+                    f"Example: 'Hey {user_name}! How's everything going?' or reference something specific. "
+                    "Keep it short, friendly, and natural."
+                )
+            else:
+                # We know their name but don't have specific context
+                return (
+                    f"Greet {user_name} casually by name, like you're happy to see them again. "
+                    f"Something like 'Hey {user_name}, great to see you! What's on your mind today?' or "
+                    f"'What's up {user_name}? How've you been?' "
+                    "Keep it short, friendly, and chill. Don't be formal or robotic. "
+                    "Don't repeat the same greeting every time - vary it naturally."
+                )
         elif is_returning_user:
+            # Returning user but we don't know their name yet
             return (
                 f"Greet the user casually like you've talked before but can't remember their name. "
                 f"Something like 'Hey there! Good to hear from you again. By the way, I'm {agent_name} - "
                 "what's your name?' Keep it natural and chill."
             )
         else:
+            # New user - introduce yourself and ask for their name
             return (
                 f"Introduce yourself casually to this new user. "
                 f"Something like 'Hey there! I'm {agent_name}, what's your name?' "
