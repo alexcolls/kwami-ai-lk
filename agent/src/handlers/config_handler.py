@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, Optional
 from ..config import KwamiConfig
 from ..memory import create_memory
 from ..utils.logging import get_logger, log_error
-from ..utils.provider import detect_provider_change
+from ..utils.provider import detect_provider_change, strip_model_prefix
 
 if TYPE_CHECKING:
     from livekit.agents import AgentSession
@@ -47,7 +47,9 @@ async def handle_full_config(
         if tts_data.get("provider"):
             new_config.voice.tts_provider = tts_data["provider"]
         if tts_data.get("model"):
-            new_config.voice.tts_model = tts_data["model"]
+            # Strip provider prefix from model (e.g. "openai/tts-1" -> "tts-1")
+            tts_provider = tts_data.get("provider") or new_config.voice.tts_provider
+            new_config.voice.tts_model = strip_model_prefix(tts_data["model"], tts_provider)
         if tts_data.get("voice"):
             new_config.voice.tts_voice = tts_data["voice"]
         if tts_data.get("speed"):
@@ -58,7 +60,8 @@ async def handle_full_config(
         if llm_data.get("provider"):
             new_config.voice.llm_provider = llm_data["provider"]
         if llm_data.get("model"):
-            new_config.voice.llm_model = llm_data["model"]
+            llm_provider = llm_data.get("provider") or new_config.voice.llm_provider
+            new_config.voice.llm_model = strip_model_prefix(llm_data["model"], llm_provider)
         if llm_data.get("temperature"):
             new_config.voice.llm_temperature = llm_data["temperature"]
         if llm_data.get("maxTokens"):
@@ -69,7 +72,8 @@ async def handle_full_config(
         if stt_data.get("provider"):
             new_config.voice.stt_provider = stt_data["provider"]
         if stt_data.get("model"):
-            new_config.voice.stt_model = stt_data["model"]
+            stt_provider = stt_data.get("provider") or new_config.voice.stt_provider
+            new_config.voice.stt_model = strip_model_prefix(stt_data["model"], stt_provider)
         if stt_data.get("language"):
             new_config.voice.stt_language = stt_data["language"]
         
@@ -111,11 +115,21 @@ async def handle_full_config(
                     kwami_name=new_config.kwami_name,
                 )
         
-        # 3. Create NEW Agent with this config (skip greeting since this is a reconfiguration)
-        new_agent = create_agent_fn(new_config, vad, memory, skip_greeting=True)
+        # 3. Create NEW Agent with this config
+        # Only skip greeting if one was already delivered in this session.
+        # The first "config" message arrives right after the default agent starts,
+        # killing its greeting before it completes. The reconfigured agent must
+        # greet in that case.
+        skip_greeting = state.greeting_delivered
+        new_agent = create_agent_fn(new_config, vad, memory, skip_greeting=skip_greeting)
         
         # 4. Switch to new agent (state handles memory cleanup)
         state.update_agent(session, new_agent)
+        
+        # Mark that we've handled the first config (greeting will be delivered by new agent)
+        if not skip_greeting:
+            state.greeting_delivered = True
+        
         logger.info(
             f"Reconfigured agent: {new_config.voice.llm_provider}/{new_config.voice.tts_provider}"
         )
@@ -216,9 +230,20 @@ async def update_voice(
         new_voice_config = replace(agent.kwami_config.voice)
         new_voice_config.tts_provider = new_provider
         if new_model:
-            new_voice_config.tts_model = new_model
+            new_voice_config.tts_model = strip_model_prefix(new_model, new_provider)
+        elif provider_changed:
+            # Clear old model when switching providers so the factory uses the
+            # new provider's default. Otherwise the old provider's model
+            # (e.g. Cartesia "sonic-3") carries over to OpenAI where it's invalid.
+            new_voice_config.tts_model = ""
         if new_voice:
             new_voice_config.tts_voice = new_voice
+        elif provider_changed:
+            # Clear old voice when switching providers so the factory uses the
+            # new provider's default. Otherwise the old provider's voice
+            # (e.g. Rime "astra") carries over to the new provider (e.g. ElevenLabs)
+            # where it doesn't exist.
+            new_voice_config.tts_voice = ""
         if config.get("tts_speed"):
             new_voice_config.tts_speed = config["tts_speed"]
         
@@ -248,20 +273,46 @@ async def _update_tts_options(
     
     updates = {}
     
-    # Detect TTS provider from module
+    # Detect TTS provider from module or passed parameter
     tts_provider = getattr(agent.tts, "provider", "").lower()
-    is_elevenlabs_tts = tts_provider == "elevenlabs" or "elevenlabs" in type(agent.tts).__module__
+    tts_module = type(agent.tts).__module__
+    tts_model = str(getattr(agent.tts, "_model", getattr(agent.tts, "model", ""))).lower()
+    
+    # Check if TTS is using LiveKit Inference (ElevenLabs, Rime, etc.)
+    is_inference_tts = "inference" in tts_module
+    is_elevenlabs_tts = (
+        is_elevenlabs
+        or tts_provider == "elevenlabs"
+        or "elevenlabs" in tts_module
+        or "elevenlabs" in tts_model
+    )
+    is_rime_tts = tts_provider == "rime" or "rime" in tts_model
+    is_openai_tts = "openai" in tts_module and not is_inference_tts
     
     if new_voice:
-        # Different TTS providers use different parameter names for voice
-        if is_elevenlabs_tts:
-            updates["voice_id"] = new_voice
-        else:
-            updates["voice"] = new_voice
+        # Validate voice against current TTS provider to avoid sending
+        # unsupported voices (e.g. Rime voice 'orion' to OpenAI fallback)
+        if is_openai_tts:
+            from ..constants import OpenAIVoices
+            if new_voice not in OpenAIVoices.STANDARD:
+                logger.warning(
+                    f"Voice '{new_voice}' not valid for current OpenAI TTS, skipping voice update. "
+                    f"Valid: {', '.join(sorted(OpenAIVoices.STANDARD))}"
+                )
+                new_voice = None  # Skip this update
+        
+        if new_voice:
+            # inference.TTS (used for ElevenLabs, Rime via LiveKit Inference)
+            # always uses "voice", not "voice_id". Only the direct
+            # elevenlabs.TTS plugin uses "voice_id".
+            if is_elevenlabs_tts and not is_inference_tts:
+                updates["voice_id"] = new_voice
+            else:
+                updates["voice"] = new_voice
     
-    # ElevenLabs doesn't support speed in update_options - requires agent recreation
-    if config.get("tts_speed") and not is_elevenlabs_tts:
-        updates["speed"] = config["tts_speed"]
+    # LiveKit Inference TTS (ElevenLabs, Rime) doesn't support speed in update_options
+    if config.get("tts_speed") and not is_inference_tts:
+        updates["speed"] = float(config["tts_speed"])
     
     if updates and hasattr(agent.tts, "update_options"):
         try:
@@ -304,7 +355,8 @@ async def _update_stt_if_needed(
         if config.get("stt_provider"):
             new_voice_config.stt_provider = config["stt_provider"]
         if config.get("stt_model"):
-            new_voice_config.stt_model = config["stt_model"]
+            stt_provider = config.get("stt_provider") or new_voice_config.stt_provider
+            new_voice_config.stt_model = strip_model_prefix(config["stt_model"], stt_provider)
         if config.get("stt_language"):
             new_voice_config.stt_language = config["stt_language"]
         
@@ -348,7 +400,8 @@ async def update_llm(
     if config.get("provider"):
         new_voice.llm_provider = config["provider"]
     if config.get("model"):
-        new_voice.llm_model = config["model"]
+        llm_provider = config.get("provider") or new_voice.llm_provider
+        new_voice.llm_model = strip_model_prefix(config["model"], llm_provider)
     if config.get("temperature"):
         new_voice.llm_temperature = config["temperature"]
     
@@ -400,4 +453,4 @@ async def update_persona(
         # Rebuild and update instructions through the session
         new_instructions = agent._build_system_prompt()
         await agent.update_instructions(new_instructions)
-        logger.info(f"Updated persona: {persona.name} - {persona.personality[:50]}...")
+        logger.info(f"Updated persona: {persona.name} - {(persona.personality or '')[:50]}...")

@@ -5,12 +5,37 @@ from typing import Optional, Tuple
 # OpenAI TTS voice names
 OPENAI_VOICES = {"alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"}
 
+# Known provider prefixes for model names
+KNOWN_PROVIDERS = ("elevenlabs", "openai", "cartesia", "deepgram", "google", "anthropic", "groq", "deepseek", "mistral", "cerebras")
+
+
+def strip_model_prefix(model: str, provider: str) -> str:
+    """Strip provider prefix from model name if present.
+    
+    Model names may arrive from the frontend with a provider prefix
+    (e.g. "openai/gpt-4.1-mini", "deepgram/nova-2", "cartesia/sonic-2").
+    Plugin constructors expect just the model name without the prefix.
+    
+    Args:
+        model: The model name, possibly with a provider prefix.
+        provider: The provider name to strip.
+        
+    Returns:
+        Model name with provider prefix removed.
+    """
+    if not model:
+        return ""
+    prefix = f"{provider}/"
+    if model.startswith(prefix):
+        return model[len(prefix):]
+    return model
+
 
 def detect_tts_provider_from_model(model: str) -> Optional[str]:
     """Detect TTS provider based on model name.
     
     Args:
-        model: The model name/identifier.
+        model: The model name/identifier, possibly with a provider prefix.
         
     Returns:
         Provider name if detected, None otherwise.
@@ -20,7 +45,13 @@ def detect_tts_provider_from_model(model: str) -> Optional[str]:
     
     model_lower = model.lower()
     
-    if model_lower.startswith("eleven_"):
+    # Check explicit provider prefix first (e.g. "elevenlabs/eleven-flash-v2.5")
+    for provider in ("elevenlabs", "openai", "cartesia", "deepgram", "google", "rime"):
+        if model_lower.startswith(f"{provider}/"):
+            return provider
+    
+    # Then check model name patterns
+    if model_lower.startswith("eleven_") or model_lower.startswith("eleven-"):
         return "elevenlabs"
     
     if model_lower.startswith("tts-") or model_lower.startswith("gpt-4o"):
@@ -31,6 +62,9 @@ def detect_tts_provider_from_model(model: str) -> Optional[str]:
     
     if model_lower.startswith("aura"):
         return "deepgram"
+    
+    if model_lower.startswith("arcana") or model_lower.startswith("mistv"):
+        return "rime"
     
     return None
 

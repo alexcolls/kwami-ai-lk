@@ -37,6 +37,7 @@ from ..constants import (
     EnvVars,
 )
 from ..exceptions import VoiceProviderError, ConfigurationError
+from ..utils.provider import strip_model_prefix
 
 logger = get_logger("tts")
 
@@ -111,6 +112,9 @@ def create_tts(config: KwamiVoiceConfig):
         elif provider == TTSProviders.GOOGLE:
             return _create_google_tts(config)
         
+        elif provider == TTSProviders.RIME:
+            return _create_rime_tts(config)
+        
         else:
             logger.warning(f"Unknown TTS provider '{provider}', falling back to OpenAI")
             return _create_openai_tts(config)
@@ -127,7 +131,7 @@ def create_tts(config: KwamiVoiceConfig):
 def _create_openai_tts(config: KwamiVoiceConfig):
     """Create OpenAI TTS with voice and model validation."""
     voice = config.tts_voice or OpenAIVoices.DEFAULT
-    model = config.tts_model or OpenAIModels.TTS_1
+    model = strip_model_prefix(config.tts_model or "", "openai") or OpenAIModels.TTS_1
     
     # Validate model
     if model not in OpenAIModels.ALL_TTS:
@@ -149,14 +153,18 @@ def _create_openai_tts(config: KwamiVoiceConfig):
     return openai.TTS(
         model=model,
         voice=voice,
-        speed=config.tts_speed or 1.0,
+        speed=float(config.tts_speed or 1.0),
     )
 
 
 def _create_elevenlabs_tts(config: KwamiVoiceConfig):
     """Create ElevenLabs TTS using LiveKit Inference (more reliable than direct plugin)."""
     voice_id = config.tts_voice or ElevenLabsVoices.DEFAULT
-    model = config.tts_model or "eleven_turbo_v2_5"
+    model = strip_model_prefix(config.tts_model or "", "elevenlabs") or "eleven_turbo_v2_5"
+    
+    # Normalize model name: dashes to underscores, dots to underscores
+    # Valid format: eleven_flash_v2_5, eleven_turbo_v2_5, etc.
+    model = model.replace("-", "_").replace(".", "_")
     
     # Use LiveKit Inference for ElevenLabs - more reliable than direct plugin
     # Format: "elevenlabs/model:voice_id"
@@ -167,6 +175,26 @@ def _create_elevenlabs_tts(config: KwamiVoiceConfig):
     return inference.TTS(
         model=model_string,
         voice=voice_id,
+    )
+
+
+def _create_rime_tts(config: KwamiVoiceConfig):
+    """Create Rime TTS using LiveKit Inference.
+    
+    Supported models: rime/arcana, rime/mistv2
+    Voices: astra, celeste, luna, ursa, orion, etc.
+    """
+    voice = config.tts_voice or "luna"
+    model = strip_model_prefix(config.tts_model or "", "rime") or "arcana"
+    
+    # Use LiveKit Inference for Rime - format: "rime/model:voice"
+    model_string = f"rime/{model}"
+    
+    logger.info(f"🔊 Using LiveKit Inference for Rime: {model_string}:{voice}")
+    
+    return inference.TTS(
+        model=model_string,
+        voice=voice,
     )
 
 
@@ -186,10 +214,12 @@ def _create_cartesia_tts(config: KwamiVoiceConfig):
         )
         voice = CartesiaVoices.DEFAULT
     
+    model = strip_model_prefix(config.tts_model or "", "cartesia") or "sonic-2"
+    
     return cartesia.TTS(
-        model=config.tts_model or "sonic-2",
+        model=model,
         voice=voice,
-        speed=config.tts_speed or 1.0,
+        speed=float(config.tts_speed or 1.0),
         encoding="pcm_s16le",
     )
 
@@ -207,7 +237,7 @@ def _create_deepgram_tts(config: KwamiVoiceConfig):
         voice = DeepgramVoices.DEFAULT
     
     # Deepgram model includes voice (e.g., "aura-asteria-en")
-    model = config.tts_model or f"aura-{voice}-en"
+    model = strip_model_prefix(config.tts_model or "", "deepgram") or f"aura-{voice}-en"
     
     return deepgram.TTS(model=model)
 
@@ -222,7 +252,7 @@ def _create_google_tts(config: KwamiVoiceConfig):
     
     return google.TTS(
         voice=voice,
-        speaking_rate=config.tts_speed or 1.0,
+        speaking_rate=float(config.tts_speed or 1.0),
     )
 
 
@@ -232,7 +262,7 @@ def _create_google_tts(config: KwamiVoiceConfig):
 
 def get_available_providers() -> list[str]:
     """Get list of available TTS providers based on installed plugins."""
-    providers = [TTSProviders.OPENAI, TTSProviders.DEEPGRAM, TTSProviders.CARTESIA]
+    providers = [TTSProviders.OPENAI, TTSProviders.DEEPGRAM, TTSProviders.CARTESIA, TTSProviders.RIME]
     
     if elevenlabs is not None:
         providers.append(TTSProviders.ELEVENLABS)
