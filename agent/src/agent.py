@@ -202,12 +202,23 @@ class KwamiAgent(Agent, AgentToolsMixin):
             return
         
         # Generate a natural, personalized greeting
-        logger.info("Generating greeting for user...")
-        greeting_instructions = await self._build_greeting_instructions()
-        self.session.generate_reply(
-            instructions=greeting_instructions,
-            allow_interruptions=False,
-        )
+        try:
+            logger.info("Generating greeting for user...")
+            greeting_instructions = await self._build_greeting_instructions()
+            self.session.generate_reply(
+                instructions=greeting_instructions,
+                allow_interruptions=False,
+            )
+        except Exception as e:
+            logger.error(f"Failed to generate greeting: {e}")
+            # Fall back to a simple greeting so the agent still speaks
+            try:
+                self.session.generate_reply(
+                    instructions="Greet the user casually and ask how you can help.",
+                    allow_interruptions=False,
+                )
+            except Exception:
+                logger.error("Failed to generate fallback greeting")
 
     async def _build_greeting_instructions(self) -> str:
         """Build natural greeting instructions based on memory context.
