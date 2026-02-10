@@ -28,6 +28,7 @@ class SessionState:
     current_agent: Optional["KwamiAgent"] = None
     user_identity: Optional[str] = None
     vad: Any = None
+    greeting_delivered: bool = False
     _cleanup_tasks: list = field(default_factory=list, repr=False)
     
     def update_agent(
@@ -37,17 +38,24 @@ class SessionState:
     ) -> None:
         """Update the current agent, cleaning up the old one's resources.
         
+        Only closes memory if the new agent does NOT share the same memory
+        instance (i.e. a truly new memory was created). When the same memory
+        object is passed through to the new agent, closing it would break
+        the new agent's memory.
+        
         Args:
             session: The LiveKit agent session.
             new_agent: The new agent to switch to.
         """
-        # Clean up old agent's memory before replacing
-        if self.current_agent and self.current_agent._memory:
-            # Schedule memory cleanup in background
-            cleanup_task = asyncio.create_task(
-                self._cleanup_memory(self.current_agent._memory)
-            )
-            self._cleanup_tasks.append(cleanup_task)
+        old_agent = self.current_agent
+        if old_agent and old_agent._memory:
+            # Only close memory if the new agent has a DIFFERENT memory instance
+            new_memory = getattr(new_agent, "_memory", None)
+            if new_memory is not old_agent._memory:
+                cleanup_task = asyncio.create_task(
+                    self._cleanup_memory(old_agent._memory)
+                )
+                self._cleanup_tasks.append(cleanup_task)
         
         # Update the session with the new agent
         session.update_agent(new_agent)

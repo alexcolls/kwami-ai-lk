@@ -58,9 +58,12 @@ async def entrypoint(ctx: JobContext) -> None:
     # Get prewarmed VAD
     vad = ctx.proc.userdata["vad"]
     
-    # Create initial agent with default configuration
+    # Create initial agent with default configuration.
+    # Skip greeting -- this is a placeholder agent until the frontend sends
+    # the real config via the "config" data message. The configured agent
+    # will greet properly with the correct persona, voice, and memory.
     config = KwamiConfig()
-    initial_agent = create_agent_from_config(config, vad)
+    initial_agent = create_agent_from_config(config, vad, skip_greeting=True)
     
     # Create session and state
     session = AgentSession()
@@ -103,6 +106,9 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.error(f"Error handling data message: {e}")
 
     ctx.room.on("data_received", handle_data)
+
+    # Register cleanup for when the session ends
+    ctx.add_shutdown_callback(state.cleanup)
 
     # Start the session
     await session.start(
