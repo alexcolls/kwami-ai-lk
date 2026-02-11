@@ -83,6 +83,10 @@ async def handle_full_config(
         if kwami_id:
             new_config.kwami_id = kwami_id
             logger.info(f"Using kwami_id for memory: {kwami_id}")
+            # Update user_identity for usage reporting (may be None at session start)
+            if not state.user_identity:
+                state.user_identity = kwami_id
+                logger.info(f"Set user_identity from config: {kwami_id}")
         if message.get("kwamiName"):
             new_config.kwami_name = message["kwamiName"]
         

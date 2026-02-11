@@ -87,8 +87,19 @@ class SessionState:
         Should be called when the session ends.
         Reports accumulated usage to the credits API before closing.
         """
+        # Try to resolve user_identity from agent config if not set
+        if not self.user_identity and self.current_agent:
+            kwami_id = getattr(self.current_agent.kwami_config, "kwami_id", None)
+            if kwami_id:
+                self.user_identity = kwami_id
+                logger.info(f"Resolved user_identity from agent config: {kwami_id}")
+
         # Report usage to credits system
         if self.user_identity and self.room_name and self.usage_tracker.has_usage:
+            logger.info(
+                f"Reporting usage: user={self.user_identity}, "
+                f"room={self.room_name}, has_usage={self.usage_tracker.has_usage}"
+            )
             try:
                 await self.usage_reporter.report(
                     user_id=self.user_identity,
@@ -97,6 +108,11 @@ class SessionState:
                 )
             except Exception as e:
                 logger.error(f"Failed to report usage on cleanup: {e}")
+        else:
+            logger.warning(
+                f"Skipping usage report: user_identity={self.user_identity}, "
+                f"room_name={self.room_name}, has_usage={self.usage_tracker.has_usage}"
+            )
 
         # Wait for all cleanup tasks to complete
         if self._cleanup_tasks:
