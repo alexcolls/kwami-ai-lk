@@ -49,6 +49,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
         self._vad = vad
         self._memory = memory
         self._skip_greeting = skip_greeting
+        self._last_memory_context = None  # Cached context from _inject_memory_context
         
         # Track current voice config for switching
         self._current_voice_config = self.kwami_config.voice
@@ -152,11 +153,20 @@ class KwamiAgent(Agent, AgentToolsMixin):
         return "\n".join(prompt_parts)
 
     async def _inject_memory_context(self) -> None:
-        """Fetch memory context and update system prompt."""
+        """Fetch memory context, cache user name, and update system prompt.
+        
+        Also pre-caches the user name so subsequent messages include
+        proper attribution in the knowledge graph.
+        """
         if not self._memory or not self._memory.is_initialized:
             return
 
         try:
+            # Pre-cache user name for message attribution
+            user_name = await self._memory.get_user_name()
+            if user_name:
+                logger.info(f"Cached user name from memory: {user_name}")
+
             context = await self._memory.get_context()
             memory_text = context.to_system_prompt_addition()
             
@@ -164,6 +174,9 @@ class KwamiAgent(Agent, AgentToolsMixin):
                 new_instructions = self._build_system_prompt(memory_text)
                 await self.update_instructions(new_instructions)
                 logger.info("Injected memory context into system prompt")
+            
+            # Store context for greeting use (avoids a second API call)
+            self._last_memory_context = context
         except Exception as e:
             logger.error(f"Failed to inject memory context: {e}")
 
@@ -223,11 +236,13 @@ class KwamiAgent(Agent, AgentToolsMixin):
     async def _build_greeting_instructions(self) -> str:
         """Build natural greeting instructions based on memory context.
         
+        Reuses the context already fetched by _inject_memory_context()
+        to avoid redundant API calls. Only makes a fresh call if no
+        cached context is available.
+        
         Returns:
             Greeting instructions for the LLM.
         """
-        import re
-        
         agent_name = (
             self.kwami_config.persona.name 
             or self.kwami_config.kwami_name 
@@ -238,50 +253,52 @@ class KwamiAgent(Agent, AgentToolsMixin):
         recent_context_summary = None
         recent_topics = []
         
-        # Try to get user's name and recent context from memory
         if self._memory and self._memory.is_initialized:
             try:
-                # First try the dedicated method
-                user_name = await self._memory.get_user_name()
-                if user_name:
-                    logger.info(f"Found user name via get_user_name(): {user_name}")
+                # Use cached user name (already looked up in _inject_memory_context)
+                user_name = self._memory._cached_user_name
                 
-                # Get context for returning user detection and recent topics
-                context = await self._memory.get_context()
-                if context.recent_messages or context.facts:
+                # Reuse cached context from _inject_memory_context (avoids 2nd API call)
+                context = self._last_memory_context
+                if context is None:
+                    context = await self._memory.get_context()
+                
+                if context.recent_messages or context.facts or context.context_block:
                     is_returning_user = True
                     logger.debug(
                         f"Returning user detected "
                         f"(messages: {len(context.recent_messages)}, facts: {len(context.facts)})"
                     )
                     
-                    # Extract recent topics/context for personalized greeting
-                    if context.summary:
+                    # Extract recent topics from context block or summary
+                    if context.context_block:
+                        recent_context_summary = context.context_block[:500]
+                    elif context.summary:
                         recent_context_summary = context.summary
                     
-                    # Get interesting facts to potentially reference
+                    # Get interesting facts to reference in greeting
                     if context.facts:
-                        # Filter for recent/interesting facts (exclude name-related facts)
-                        for fact in context.facts[:5]:  # Look at top 5 most relevant
+                        name_skip = ['name is', 'called', 'i am', "i'm"]
+                        for fact in context.facts[:5]:
                             fact_lower = fact.lower()
-                            if not any(skip in fact_lower for skip in ['name is', 'called', 'i am', 'i\'m']):
+                            if not any(skip in fact_lower for skip in name_skip):
                                 recent_topics.append(fact)
                 
-                # If we didn't find name yet, try extracting from facts directly
-                if not user_name and context.facts:
-                    logger.debug(f"Searching {len(context.facts)} facts for user name...")
+                # If name not cached, try extracting from facts as fallback
+                if not user_name and context and context.facts:
+                    import re
                     for fact in context.facts:
-                        logger.debug(f"Fact: {fact}")
-                        # Look for name patterns in facts
                         match = re.search(
                             r"(?:name is|called|i'm|i am)\s+([A-Z][a-z]+)",
                             fact, re.IGNORECASE
                         )
                         if match:
-                            potential_name = match.group(1).capitalize()
-                            if potential_name.lower() not in {'the', 'a', 'user', 'assistant', 'kwami', agent_name.lower()}:
-                                user_name = potential_name
-                                logger.info(f"Found user name from context facts: {user_name}")
+                            potential = match.group(1).capitalize()
+                            excluded = {'the', 'a', 'user', 'assistant', 'kwami', agent_name.lower()}
+                            if potential.lower() not in excluded:
+                                user_name = potential
+                                self._memory.set_user_name(user_name)
+                                logger.info(f"Found user name from facts: {user_name}")
                                 break
                                 
             except Exception as e:
@@ -289,9 +306,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
         
         # Build natural greeting instructions based on what we know
         if user_name:
-            # Returning user with known name - make it personal and contextual
             if recent_topics:
-                # We have recent topics to reference
                 topics_str = "; ".join(recent_topics[:3])
                 return (
                     f"Greet {user_name} warmly by name, like you're happy to see them again. "
@@ -304,7 +319,6 @@ class KwamiAgent(Agent, AgentToolsMixin):
                     "Pick ONE topic and ask about it naturally - don't list everything you remember."
                 )
             elif recent_context_summary:
-                # We have a summary but no specific topics
                 return (
                     f"Greet {user_name} warmly by name, like you're happy to see them again. "
                     f"Here's a summary of your past conversations: {recent_context_summary}. "
@@ -313,7 +327,6 @@ class KwamiAgent(Agent, AgentToolsMixin):
                     "Keep it short, friendly, and natural."
                 )
             else:
-                # We know their name but don't have specific context
                 return (
                     f"Greet {user_name} casually by name, like you're happy to see them again. "
                     f"Something like 'Hey {user_name}, great to see you! What's on your mind today?' or "
@@ -322,14 +335,12 @@ class KwamiAgent(Agent, AgentToolsMixin):
                     "Don't repeat the same greeting every time - vary it naturally."
                 )
         elif is_returning_user:
-            # Returning user but we don't know their name yet
             return (
                 f"Greet the user casually like you've talked before but can't remember their name. "
                 f"Something like 'Hey there! Good to hear from you again. By the way, I'm {agent_name} - "
                 "what's your name?' Keep it natural and chill."
             )
         else:
-            # New user - introduce yourself and ask for their name
             return (
                 f"Introduce yourself casually to this new user. "
                 f"Something like 'Hey there! I'm {agent_name}, what's your name?' "
@@ -339,6 +350,10 @@ class KwamiAgent(Agent, AgentToolsMixin):
     async def on_user_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
         """Called when user finishes speaking.
         
+        Buffers the user message so it can be sent together with the
+        assistant's response in a single add_messages call. This produces
+        much better knowledge graph construction in Zep.
+        
         Args:
             turn_ctx: Turn context.
             new_message: The user's message.
@@ -347,12 +362,19 @@ class KwamiAgent(Agent, AgentToolsMixin):
             try:
                 content = self._extract_message_content(new_message)
                 if content:
-                    await self._memory.add_message("user", content)
+                    # Get user name for better graph attribution
+                    user_name = self._memory._cached_user_name or None
+                    await self._memory.buffer_user_message(content, name=user_name)
             except Exception as e:
-                logger.warning(f"Failed to add user message to memory: {e}")
+                logger.warning(f"Failed to buffer user message: {e}")
 
     async def on_agent_turn_completed(self, turn_ctx: Any, new_message: Any) -> None:
         """Called when agent finishes responding.
+        
+        Sends the buffered user message + this assistant response as a
+        batch to Zep. Uses ignore_roles=["assistant"] so only user
+        messages create graph entities, while assistant messages provide
+        context for entity extraction.
         
         Args:
             turn_ctx: Turn context.
@@ -362,9 +384,16 @@ class KwamiAgent(Agent, AgentToolsMixin):
             try:
                 content = self._extract_message_content(new_message)
                 if content:
-                    await self._memory.add_message("assistant", content)
+                    agent_name = (
+                        self.kwami_config.persona.name
+                        or self.kwami_config.kwami_name
+                    )
+                    await self._memory.add_exchange(
+                        assistant_content=content,
+                        assistant_name=agent_name,
+                    )
             except Exception as e:
-                logger.warning(f"Failed to add agent message to memory: {e}")
+                logger.warning(f"Failed to add exchange to memory: {e}")
 
     def _extract_message_content(self, message: Any) -> str:
         """Extract text content from various message formats.
