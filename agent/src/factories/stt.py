@@ -70,8 +70,8 @@ def create_stt(config: KwamiVoiceConfig):
         
         elif provider == STTProviders.ELEVENLABS and elevenlabs is not None:
             return elevenlabs.STT(
-                model=model or "scribe_v1",
-                language=config.stt_language or "en",
+                model_id=model or "scribe_v1",
+                language_code=config.stt_language or "en",
             )
         
         elif provider == STTProviders.CARTESIA and cartesia is not None:

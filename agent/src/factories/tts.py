@@ -160,6 +160,17 @@ def _create_openai_tts(config: KwamiVoiceConfig):
 def _create_elevenlabs_tts(config: KwamiVoiceConfig):
     """Create ElevenLabs TTS using LiveKit Inference (more reliable than direct plugin)."""
     voice_id = config.tts_voice or ElevenLabsVoices.DEFAULT
+    
+    # ElevenLabs uses 20-char alphanumeric voice IDs (e.g. "21m00Tcm4TlvDq8ikWAM").
+    # Short names like "nova" or "alloy" are OpenAI voices that leak through when
+    # the TTS provider is changed but the voice isn't updated. Fall back to default.
+    if voice_id and voice_id not in ElevenLabsVoices.ALL and len(voice_id) < 15:
+        logger.warning(
+            f"Voice '{voice_id}' is not a valid ElevenLabs voice ID. "
+            f"Using default: {ElevenLabsVoices.DEFAULT}"
+        )
+        voice_id = ElevenLabsVoices.DEFAULT
+    
     model = strip_model_prefix(config.tts_model or "", "elevenlabs") or "eleven_turbo_v2_5"
     
     # Normalize model name: dashes to underscores, dots to underscores
