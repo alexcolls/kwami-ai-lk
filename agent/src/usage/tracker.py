@@ -4,7 +4,7 @@ Tracks:
 - LLM token usage (prompt + completion tokens)
 - STT audio duration (minutes)
 - TTS character count
-- Realtime model token usage
+- Realtime model usage (duration in minutes for pricing)
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class ModelUsage:
 
     model_type: str  # 'llm', 'stt', 'tts', 'realtime'
     model_id: str
-    total_units: float = 0.0  # tokens for LLM, minutes for STT, chars for TTS
+    total_units: float = 0.0  # tokens for LLM, minutes for STT/realtime, chars for TTS
     event_count: int = 0
 
 
@@ -147,22 +147,22 @@ class UsageTracker:
     def on_realtime_metrics(self, metrics: Any) -> None:
         """Handle a LiveKit RealtimeModelMetrics event.
 
-        Attributes used: total_tokens, label, metadata.
+        Uses duration (response time in seconds) so units_used is in minutes,
+        matching the API's RealtimePricing (per-minute audio).
         """
         model_id = _get_model_id(metrics)
-        total_tokens = getattr(metrics, "total_tokens", 0)
-
-        if total_tokens <= 0:
+        duration_seconds = getattr(metrics, "duration", 0.0)
+        if duration_seconds <= 0:
             return
-
+        minutes = duration_seconds / 60.0
         with self._lock:
             entry = self._get_or_create("realtime", model_id)
-            entry.total_units += total_tokens
+            entry.total_units += minutes
             entry.event_count += 1
 
         logger.info(
-            f"Realtime usage: {model_id} +{total_tokens} tokens "
-            f"(total: {entry.total_units:.0f})"
+            f"Realtime usage: {model_id} +{minutes:.3f} min "
+            f"(total: {entry.total_units:.3f} min)"
         )
 
     # -----------------------------------------------------------------
