@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import httpx
 from livekit.agents import RunContext, function_tool
 
+from ..room_context import get_current_room
 from ..utils.logging import get_logger
 from ..constants import (
     CartesiaVoices,
@@ -266,20 +267,49 @@ class AgentToolsMixin:
 
         max_results = max(1, min(10, max_results))
         payload = {
-            "api_key": api_key,
             "query": query,
             "search_depth": "basic",
             "max_results": max_results,
             "include_answer": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
         }
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.post(
                     "https://api.tavily.com/search",
                     json=payload,
+                    headers=headers,
                 )
                 resp.raise_for_status()
                 data = resp.json()
+        except httpx.HTTPStatusError as e:
+            body = ""
+            try:
+                body = e.response.text
+            except Exception:
+                pass
+            logger.warning(
+                "Tavily search failed: status=%s body=%s",
+                e.response.status_code,
+                body[:500] if body else "",
+            )
+            if e.response.status_code == 432:
+                # Don't echo Tavily's body to the user; it can be wrong (e.g. "usage limit" when credits are fine).
+                # We only log it for debugging.
+                return "Web search is temporarily unavailable. Please try again in a moment."
+            if e.response.status_code == 401:
+                return "Web search is not configured correctly (invalid API key)."
+            if e.response.status_code == 429:
+                return "Web search rate limit reached. Please try again in a moment."
+            try:
+                err = e.response.json()
+                msg = err.get("detail") or err.get("message") or err.get("error") or body
+            except Exception:
+                msg = body or str(e)
+            return f"Search failed: {msg}"
         except Exception as e:
             logger.exception("Tavily search failed")
             return f"Search failed: {str(e)}"
@@ -290,20 +320,51 @@ class AgentToolsMixin:
         ]
         answer = data.get("answer") or ""
 
-        if self.room:
+        room = get_current_room() or (getattr(context, "room", None) if context else None) or self.room
+        if room:
             try:
+                # LiveKit reliable data is limited to ~15 KiB; truncate for UI
+                max_results = 5
+                max_content = 300
+                max_answer = 500
+                ui_results = [
+                    {
+                        "title": (r["title"] or "")[:200],
+                        "url": (r["url"] or "")[:500],
+                        "content": (r["content"] or "")[:max_content],
+                    }
+                    for r in results[:max_results]
+                ]
+                ui_answer = (answer or "")[:max_answer]
                 msg = {
                     "type": "search_results",
                     "query": query,
-                    "results": results,
-                    "answer": answer,
+                    "results": ui_results,
+                    "answer": ui_answer,
                 }
-                await self.room.local_participant.publish_data(
-                    json.dumps(msg).encode("utf-8"),
+                payload = json.dumps(msg).encode("utf-8")
+                if len(payload) > 14 * 1024:
+                    ui_answer = (ui_answer or "")[:200]
+                    msg["answer"] = ui_answer
+                    payload = json.dumps(msg).encode("utf-8")
+                logger.info(
+                    "Publishing search_results to room (query=%r, results=%s)",
+                    query[:80] if query else "",
+                    len(ui_results),
+                )
+                await room.local_participant.publish_data(
+                    payload,
                     reliable=True,
                 )
+                logger.info("Published search_results to client")
             except Exception as e:
                 logger.warning("Failed to send search_results to client: %s", e)
+        else:
+            logger.warning(
+                "Cannot send search_results to client: no room (self.room=%s, context.room=%s)",
+                self.room is not None,
+                getattr(context, "room", None) is not None if context else False,
+            )
 
         if answer:
             return answer

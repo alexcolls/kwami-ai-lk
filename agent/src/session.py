@@ -30,6 +30,7 @@ class SessionState:
     current_agent: Optional["KwamiAgent"] = None
     user_identity: Optional[str] = None
     room_name: Optional[str] = None
+    room: Any = None  # LiveKit room; set in entrypoint so tools (e.g. web_search) can publish
     vad: Any = None
     greeting_delivered: bool = False
     usage_tracker: UsageTracker = field(default_factory=UsageTracker)
@@ -65,7 +66,10 @@ class SessionState:
         # Update the session with the new agent
         session.update_agent(new_agent)
         self.current_agent = new_agent
-        
+        # Ensure the new agent has the room so server-side tools (e.g. web_search) can publish
+        if self.room is not None:
+            new_agent.room = self.room
+
         logger.debug(f"Agent updated, cleanup tasks pending: {len(self._cleanup_tasks)}")
     
     async def _cleanup_memory(self, memory: Any) -> None:

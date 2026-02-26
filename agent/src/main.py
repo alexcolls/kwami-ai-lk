@@ -25,6 +25,7 @@ from .config import KwamiConfig
 from .factories import create_llm, create_stt, create_tts, create_realtime_model
 from .handlers import handle_full_config, handle_config_update, handle_tool_result
 from .memory import create_memory
+from .room_context import set_current_room
 from .session import SessionState, create_session_state
 from .utils.logging import get_logger
 
@@ -44,6 +45,7 @@ server.setup_fnc = prewarm
 @server.rtc_session(agent_name="kwami-agent")
 async def entrypoint(ctx: JobContext) -> None:
     """Main entry point for Kwami agent sessions."""
+    set_current_room(ctx.room)
     logger.info(f"Kwami session starting in room: {ctx.room.name}")
 
     # Log participants and extract user identity
@@ -73,7 +75,9 @@ async def entrypoint(ctx: JobContext) -> None:
         room_name=ctx.room.name,
         vad=vad,
     )
-    
+    state.room = ctx.room
+    initial_agent.room = ctx.room
+
     # Wire up metrics events for usage tracking
     @session.on("metrics_collected")
     def on_metrics(event):
