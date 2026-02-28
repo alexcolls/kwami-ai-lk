@@ -1,8 +1,10 @@
 """Built-in function tools for KwamiAgent."""
 
+import asyncio
 import json
 import os
-from typing import Any, Dict, List
+import re
+from typing import Any, Dict, List, Optional
 
 import httpx
 from livekit.agents import RunContext, function_tool
@@ -16,6 +18,61 @@ from ..constants import (
 )
 
 logger = get_logger("tools")
+
+
+def _extract_features(content: str, max_items: int = 8) -> List[str]:
+    """Extract short feature-like phrases from snippet (apartments, products, events)."""
+    if not (content or "").strip():
+        return []
+    # Split on newlines, bullets, dashes, semicolons, and commas (listings often use commas)
+    raw = re.split(r"[\n•\-;,]+|\s+-\s+", content)
+    seen: set = set()
+    features: List[str] = []
+    for part in raw:
+        s = (part or "").strip()
+        if not s or len(s) < 2:
+            continue
+        if len(s) > 72:
+            s = s[:69] + "..."
+        low = s.lower()
+        if low in ("and", "or", "the", "with", "for", "from", "in", "to"):
+            continue
+        if low in seen:
+            continue
+        seen.add(low)
+        features.append(s)
+        if len(features) >= max_items:
+            break
+    return features[:max_items]
+
+
+async def _fetch_image_for_url(url: str, timeout: float = 3.5) -> Optional[str]:
+    """Try to get og:image or primary image for a URL via Microlink (no key required)."""
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(
+                "https://api.microlink.io/",
+                params={"url": url, "screenshot": "false", "video": "false"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            d = data.get("data") or {}
+            img = d.get("image")
+            url_out = None
+            if isinstance(img, dict) and img.get("url"):
+                url_out = img["url"]
+            elif isinstance(img, str) and img.startswith("http"):
+                url_out = img
+            if not url_out and d.get("logo"):
+                logo = d.get("logo")
+                if isinstance(logo, dict) and logo.get("url"):
+                    url_out = logo["url"]
+                elif isinstance(logo, str) and logo.startswith("http"):
+                    url_out = logo
+            return url_out
+    except Exception as e:
+        logger.debug("Microlink fetch failed for %s: %s", url[:50], e)
+    return None
 
 
 def _is_elevenlabs_tts(tts: Any) -> bool:
@@ -320,21 +377,41 @@ class AgentToolsMixin:
         ]
         answer = data.get("answer") or ""
 
+        # Store search query in memory for future context
+        if self._memory and self._memory.is_initialized:
+            try:
+                await self._memory.add_fact(f"User searched for: {query}")
+            except Exception as e:
+                logger.debug("Could not store search in memory: %s", e)
+
+        # Enrich results: extract features, fetch image per result (for UI)
+        max_results = 5
+        max_content = 220  # Keep payload smaller so images fit under LiveKit limit
+        ui_results: List[Dict[str, Any]] = []
+        for r in results[:max_results]:
+            content = (r.get("content") or "")[:max_content]
+            features = _extract_features(content)[:5]  # Max 5 features, shorter list
+            ui_results.append({
+                "title": (r.get("title") or "")[:180],
+                "url": (r.get("url") or "")[:400],
+                "content": content,
+                "features": [f[:60] for f in features],
+            })
+
+        # Fetch images in parallel (optional; don't block on failures)
+        async def add_image(idx: int, url: str) -> None:
+            img = await _fetch_image_for_url(url)
+            if img and idx < len(ui_results):
+                ui_results[idx]["image"] = (img or "")[:400]
+
+        await asyncio.gather(*[add_image(i, r["url"]) for i, r in enumerate(ui_results)])
+        images_count = sum(1 for u in ui_results if u.get("image"))
+        logger.info("Fetched %s images for %s results", images_count, len(ui_results))
+
         room = get_current_room() or (getattr(context, "room", None) if context else None) or self.room
         if room:
             try:
-                # LiveKit reliable data is limited to ~15 KiB; truncate for UI
-                max_results = 5
-                max_content = 300
-                max_answer = 500
-                ui_results = [
-                    {
-                        "title": (r["title"] or "")[:200],
-                        "url": (r["url"] or "")[:500],
-                        "content": (r["content"] or "")[:max_content],
-                    }
-                    for r in results[:max_results]
-                ]
+                max_answer = 400
                 ui_answer = (answer or "")[:max_answer]
                 msg = {
                     "type": "search_results",
@@ -343,14 +420,22 @@ class AgentToolsMixin:
                     "answer": ui_answer,
                 }
                 payload = json.dumps(msg).encode("utf-8")
+                # Prefer keeping images: trim content/answer/features first, strip images only as last resort
                 if len(payload) > 14 * 1024:
-                    ui_answer = (ui_answer or "")[:200]
-                    msg["answer"] = ui_answer
+                    for item in msg.get("results", []):
+                        item["content"] = (item.get("content") or "")[:120]
+                        item["features"] = (item.get("features") or [])[:3]
+                    msg["answer"] = (ui_answer or "")[:150]
+                    payload = json.dumps(msg).encode("utf-8")
+                if len(payload) > 14 * 1024:
+                    for item in msg.get("results", []):
+                        item.pop("image", None)
                     payload = json.dumps(msg).encode("utf-8")
                 logger.info(
-                    "Publishing search_results to room (query=%r, results=%s)",
+                    "Publishing search_results to room (query=%r, results=%s, with_images=%s)",
                     query[:80] if query else "",
                     len(ui_results),
+                    any(u.get("image") for u in msg.get("results", [])),
                 )
                 await room.local_participant.publish_data(
                     payload,
