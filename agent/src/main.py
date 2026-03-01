@@ -120,6 +120,17 @@ async def entrypoint(ctx: JobContext) -> None:
                     message.get("result"),
                     message.get("error"),
                 )
+            elif msg_type == "search_similar":
+                # Client "Find similar" button: run a product search like the selected result
+                title = (message.get("title") or "").strip() or "similar products"
+                url = message.get("url") or ""
+                if state.current_agent and title:
+                    query = f"similar to {title[:80]} buy"
+                    logger.info("Running similar search from client: query=%s", query[:60])
+                    ctx_simple = type("Ctx", (), {"room": ctx.room})()
+                    asyncio.create_task(
+                        state.current_agent.web_search(ctx_simple, query, max_results=5, search_for_products=True)
+                    )
                 
         except Exception as e:
             logger.error(f"Error handling data message: {e}")

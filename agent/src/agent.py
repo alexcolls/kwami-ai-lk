@@ -140,6 +140,29 @@ class KwamiAgent(Agent, AgentToolsMixin):
         prompt_parts.append(
             "\nYou can change your voice or the AI model being used if the user requests it."
         )
+        # Search and product discovery
+        prompt_parts.append(
+            "\nWhen the user asks to find products, gifts, or things to buy (e.g. bags, clothes, items), use the product_search tool first so they see actual product cards with product image, name, and price—not store website links. If product_search says it is not configured, use web_search with search_for_products=True instead."
+        )
+        prompt_parts.append(
+            "Remember what the user searched for; use your memory of past searches in follow-up answers."
+        )
+        prompt_parts.append(
+            "If the user says to discard, remove, or dismiss a result (e.g. 'discard the first one', 'remove that card'), call dismiss_search_result with the 0-based index (first card = 0, second = 1)."
+        )
+        prompt_parts.append(
+            "If the user wants more like a specific result (e.g. 'find more like this', 'similar to that one'), run web_search with a query like 'similar to [that result title] buy' or 'products like [title]' and set search_for_products=True."
+        )
+
+        # Navigation guidance
+        prompt_parts.append(
+            "\nYou can open websites for the user with navigate_to. The page opens directly "
+            "in the user's browser so they can see and interact with it themselves (click, "
+            "scroll, type). You control navigation: open URLs, go back/forward, close. "
+            "Guide the user: tell them what you opened and suggest what they can do on the "
+            "page. Use go_back_in_browser and go_forward_in_browser for history navigation. "
+            "Use close_navigation when the user is done browsing."
+        )
 
         # Memory context injection
         if memory_context:

@@ -20,6 +20,42 @@ from ..constants import (
 logger = get_logger("tools")
 
 
+# Price patterns: $12.99, €199, £50, 99 EUR, 1,200€, 49.99 USD, etc.
+_PRICE_RE = re.compile(
+    r"(?:^|[\s,(])((?:USD|EUR|GBP|€|£|\$)\s*)?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?|\d+[.,]?\d*)\s*(USD|EUR|GBP|€|£|\$)?(?:[\s,]|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_price(text: str) -> Optional[str]:
+    """Extract first price-like string from text for product cards (e.g. '€199', '$49.99')."""
+    if not (text or "").strip():
+        return None
+    m = _PRICE_RE.search(text)
+    if not m:
+        return None
+    prefix = (m.group(1) or "").strip()
+    num = (m.group(2) or "").replace(",", ".")
+    suffix = (m.group(3) or "").strip()
+    if not num:
+        return None
+    currency = prefix or suffix or ""
+    if currency.upper() in ("USD", "EUR", "GBP"):
+        currency = {"USD": "$", "EUR": "€", "GBP": "£"}.get(currency.upper(), currency)
+    return f"{currency}{num}".strip() if currency else num.strip()
+
+
+def _product_name_from_title(title: str) -> str:
+    """Short product name: strip site name, ' - Site', ' | Site', etc."""
+    if not title:
+        return ""
+    t = title.strip()
+    for sep in (" | ", " – ", " - ", " — "):
+        if sep in t:
+            t = t.split(sep)[0].strip()
+    return t[:80] if t else ""
+
+
 def _extract_features(content: str, max_items: int = 8) -> List[str]:
     """Extract short feature-like phrases from snippet (apartments, products, events)."""
     if not (content or "").strip():
@@ -44,6 +80,30 @@ def _extract_features(content: str, max_items: int = 8) -> List[str]:
         if len(features) >= max_items:
             break
     return features[:max_items]
+
+
+async def _tavily_extract_images(api_key: str, urls: List[str], timeout: float = 12.0) -> Dict[str, List[str]]:
+    """Extract content and images from URLs via Tavily Extract. Returns url -> list of image URLs."""
+    out: Dict[str, List[str]] = {u: [] for u in urls}
+    if not api_key or not urls:
+        return out
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.post(
+                "https://api.tavily.com/extract",
+                json={"urls": urls[:5], "include_images": True, "extract_depth": "basic"},
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            )
+            r.raise_for_status()
+            data = r.json()
+            for item in (data.get("results") or []):
+                url = item.get("url")
+                images = item.get("images") or []
+                if url and isinstance(images, list):
+                    out[url] = [img for img in images if isinstance(img, str) and img.startswith("http")][:3]
+    except Exception as e:
+        logger.debug("Tavily extract failed: %s", e)
+    return out
 
 
 async def _fetch_image_for_url(url: str, timeout: float = 3.5) -> Optional[str]:
@@ -310,12 +370,98 @@ class AgentToolsMixin:
             }
 
     @function_tool()
-    async def web_search(self, context: RunContext, query: str, max_results: int = 5) -> str:
-        """Search the web for current information. Use when the user asks about recent events, facts, news, or anything you need to look up.
+    async def product_search(self, context: RunContext, query: str, max_results: int = 5) -> str:
+        """Search for actual products to buy (bags, clothes, gifts, etc.). Returns real product cards with image, name, and price—not store homepages.
+        Use this when the user wants to find or buy something (e.g. 'bags for my girlfriend', 'women's jackets', 'gift ideas').
+        Prefer this over web_search for any shopping or product-finding intent.
+
+        Args:
+            query: Product search query (e.g. "women's bags", "leather handbags", "gift for girlfriend").
+            max_results: Number of products to return (1-10, default 5).
+        """
+        api_key = os.environ.get("SERPAPI_KEY")
+        if not api_key:
+            logger.info("SERPAPI_KEY not set; product_search unavailable, use web_search with search_for_products")
+            return (
+                "Product search is not configured (set SERPAPI_KEY for real product results). "
+                "Use web_search with search_for_products=True instead."
+            )
+        max_results = max(1, min(10, max_results))
+        try:
+            async with httpx.AsyncClient(timeout=12.0) as client:
+                r = await client.get(
+                    "https://serpapi.com/search",
+                    params={"engine": "google_shopping", "q": query, "api_key": api_key, "num": max_results},
+                )
+                r.raise_for_status()
+                data = r.json()
+        except Exception as e:
+            logger.warning("SerpApi product search failed: %s", e)
+            return "Product search failed. Try web_search with search_for_products=True."
+        shopping = data.get("shopping_results") or []
+        if not shopping:
+            return "No products found. Try web_search with a different query."
+        # Build product cards: real product image, title, price, link
+        ui_results: List[Dict[str, Any]] = []
+        for p in shopping[:max_results]:
+            title = (p.get("title") or "")[:180]
+            price_str = p.get("price") or ""
+            link = p.get("product_link") or p.get("link") or ""
+            thumb = p.get("thumbnail") or ""
+            snippet = (p.get("snippet") or "")[:200]
+            source = p.get("source") or ""
+            features = [f for f in [source, snippet] if f][:3]
+            ui_results.append({
+                "title": title,
+                "product_name": title[:120],
+                "price": price_str[:30] if price_str else None,
+                "url": link[:500] if link else "",
+                "content": snippet,
+                "image": (thumb[:500] if thumb else None),
+                "features": features,
+            })
+        answer = f"Found {len(ui_results)} products for '{query[:50]}'."
+        if self._memory and self._memory.is_initialized:
+            try:
+                await self._memory.add_fact(f"User searched for products: {query}")
+            except Exception:
+                pass
+        room = get_current_room() or (getattr(context, "room", None) if context else None) or self.room
+        if room:
+            try:
+                msg = {
+                    "type": "search_results",
+                    "query": query,
+                    "results": ui_results,
+                    "answer": answer[:400],
+                }
+                payload = json.dumps(msg).encode("utf-8")
+                if len(payload) > 14 * 1024:
+                    for item in msg.get("results", []):
+                        item["content"] = (item.get("content") or "")[:80]
+                payload = json.dumps(msg).encode("utf-8")
+                await room.local_participant.publish_data(payload, reliable=True)
+                logger.info("Published product_search results: %s products", len(ui_results))
+            except Exception as e:
+                logger.warning("Failed to send product results to client: %s", e)
+        return answer
+
+    @function_tool()
+    async def web_search(
+        self,
+        context: RunContext,
+        query: str,
+        max_results: int = 5,
+        search_for_products: bool = False,
+    ) -> str:
+        """Search the web for current information. Use for facts, news, or when product_search is not available.
+
+        For shopping or gifts: prefer product_search so the user sees real product cards (image, name, price). Use web_search with search_for_products=True only if product_search is not configured.
 
         Args:
             query: The search query.
             max_results: Maximum number of results to return (1-10, default 5).
+            search_for_products: Set True when the user is looking for products and product_search is unavailable.
         """
         api_key = os.environ.get("TAVILY_API_KEY")
         if not api_key:
@@ -325,10 +471,15 @@ class AgentToolsMixin:
         max_results = max(1, min(10, max_results))
         payload = {
             "query": query,
-            "search_depth": "basic",
+            "search_depth": "advanced",
             "max_results": max_results,
             "include_answer": True,
         }
+        if search_for_products:
+            payload["include_domains"] = [
+                "amazon.com", "etsy.com", "asos.com", "nordstrom.com", "zara.com",
+                "hm.com", "macy.com", "bloomingdales.com", "ssense.com", "farfetch.com",
+            ]
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -381,6 +532,8 @@ class AgentToolsMixin:
         if self._memory and self._memory.is_initialized:
             try:
                 await self._memory.add_fact(f"User searched for: {query}")
+                if search_for_products:
+                    await self._memory.add_fact(f"User is shopping / looking for products: {query}")
             except Exception as e:
                 logger.debug("Could not store search in memory: %s", e)
 
@@ -389,22 +542,36 @@ class AgentToolsMixin:
         max_content = 220  # Keep payload smaller so images fit under LiveKit limit
         ui_results: List[Dict[str, Any]] = []
         for r in results[:max_results]:
+            raw_title = (r.get("title") or "")[:180]
             content = (r.get("content") or "")[:max_content]
             features = _extract_features(content)[:5]  # Max 5 features, shorter list
+            price = _extract_price(content) or _extract_price(raw_title)
+            product_name = _product_name_from_title(raw_title) or raw_title
             ui_results.append({
-                "title": (r.get("title") or "")[:180],
+                "title": raw_title,
+                "product_name": product_name[:120],
+                "price": price[:30] if price else None,
                 "url": (r.get("url") or "")[:400],
                 "content": content,
                 "features": [f[:60] for f in features],
             })
 
-        # Fetch images in parallel (optional; don't block on failures)
-        async def add_image(idx: int, url: str) -> None:
+        # Get images: prefer Tavily Extract (real page images), fallback to Microlink
+        result_urls = [u["url"] for u in ui_results]
+        extract_images = await _tavily_extract_images(api_key, result_urls)
+        for i, u in enumerate(ui_results):
+            imgs = extract_images.get(u["url"]) or []
+            if imgs:
+                ui_results[i]["image"] = imgs[0][:400]
+
+        async def add_image_fallback(idx: int, url: str) -> None:
+            if ui_results[idx].get("image"):
+                return
             img = await _fetch_image_for_url(url)
             if img and idx < len(ui_results):
                 ui_results[idx]["image"] = (img or "")[:400]
 
-        await asyncio.gather(*[add_image(i, r["url"]) for i, r in enumerate(ui_results)])
+        await asyncio.gather(*[add_image_fallback(i, r["url"]) for i, r in enumerate(ui_results)])
         images_count = sum(1 for u in ui_results if u.get("image"))
         logger.info("Fetched %s images for %s results", images_count, len(ui_results))
 
@@ -458,3 +625,88 @@ class AgentToolsMixin:
                 f"- {r['title']}: {r['content'][:150]}..." for r in results[:3]
             )
         return "No results found."
+
+    # -------------------------------------------------------------------------
+    # Navigation tools (client-side: agent sends commands, client renders)
+    # -------------------------------------------------------------------------
+
+    async def _send_nav_command(self, context: RunContext, action: str, url: str = "") -> bool:
+        """Send a navigation command to the client via data channel."""
+        room = (
+            get_current_room()
+            or (getattr(context, "room", None) if context else None)
+            or self.room
+        )
+        if not room:
+            return False
+        msg: Dict[str, Any] = {"type": "nav_command", "action": action}
+        if url:
+            msg["url"] = url
+        await room.local_participant.publish_data(
+            json.dumps(msg).encode("utf-8"), reliable=True
+        )
+        return True
+
+    @function_tool()
+    async def navigate_to(self, context: RunContext, url: str) -> str:
+        """Open a website for the user. The page opens directly in their browser so they can interact with it.
+        Use this when the user asks you to open, go to, visit, or browse a website.
+
+        Args:
+            url: The URL to navigate to (e.g. 'https://wikipedia.org', 'google.com').
+        """
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+        ok = await self._send_nav_command(context, "navigate", url)
+        if not ok:
+            return "Cannot open browser: no room connection available."
+        logger.info("Sent navigate command to client: %s", url[:80])
+        return f"Opening {url} for the user. They can interact with the page directly."
+
+    @function_tool()
+    async def go_back_in_browser(self, context: RunContext) -> str:
+        """Go back to the previous page in the user's navigation window."""
+        ok = await self._send_nav_command(context, "back")
+        if not ok:
+            return "Cannot send command: no room connection."
+        return "Going back to the previous page."
+
+    @function_tool()
+    async def go_forward_in_browser(self, context: RunContext) -> str:
+        """Go forward to the next page in the user's navigation window."""
+        ok = await self._send_nav_command(context, "forward")
+        if not ok:
+            return "Cannot send command: no room connection."
+        return "Going forward to the next page."
+
+    @function_tool()
+    async def close_navigation(self, context: RunContext) -> str:
+        """Close the user's navigation window. Use when the user is done browsing or asks to close/stop navigation."""
+        ok = await self._send_nav_command(context, "close")
+        if not ok:
+            return "Cannot send command: no room connection."
+        return "Browser closed."
+
+    # -------------------------------------------------------------------------
+    # Search result management
+    # -------------------------------------------------------------------------
+
+    @function_tool()
+    async def dismiss_search_result(self, context: RunContext, index: int) -> str:
+        """Remove a search result card from the user's screen. Call this when the user says to discard, remove, or dismiss a result (e.g. 'discard the first one', 'remove that', 'not that one').
+        Use the 0-based index: first card is 0, second is 1, and so on.
+        Args:
+            index: 0-based index of the result to remove (0 = first card, 1 = second, etc.).
+        """
+        room = get_current_room() or (getattr(context, "room", None) if context else None) or self.room
+        if room:
+            try:
+                msg = {"type": "remove_result", "index": max(0, int(index))}
+                await room.local_participant.publish_data(
+                    json.dumps(msg).encode("utf-8"),
+                    reliable=True,
+                )
+                return f"Removed that result from the screen."
+            except Exception as e:
+                logger.warning("Failed to send remove_result to client: %s", e)
+        return "Could not remove the result."

@@ -158,7 +158,7 @@ class SessionState:
             await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
             self._cleanup_tasks.clear()
         
-        # Close current agent's voice pipeline (STT/LLM/TTS) and memory
+        # Close current agent's voice pipeline and memory
         if self.current_agent:
             await self._cleanup_agent_voice_pipeline(self.current_agent)
             if self.current_agent._memory:
