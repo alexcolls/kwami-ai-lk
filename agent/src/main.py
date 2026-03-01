@@ -120,6 +120,21 @@ async def entrypoint(ctx: JobContext) -> None:
                     message.get("result"),
                     message.get("error"),
                 )
+            elif msg_type == "nav_page_content":
+                # Page content from the client navigation window
+                if state.current_agent:
+                    title = message.get("title", "")
+                    text = message.get("text", "")
+                    elements = message.get("elements", [])
+                    el_summary = "\n".join(
+                        f"  - [{e.get('type')}] {e.get('label', '')}" for e in elements[:30]
+                    )
+                    content = f"Page: {title}\n\nContent:\n{text[:2000]}"
+                    if el_summary:
+                        content += f"\n\nInteractive elements:\n{el_summary}"
+                    state.current_agent._last_nav_page_content = content
+                    logger.info("Cached nav page content: %s (%d chars)", title[:50], len(content))
+
             elif msg_type == "search_similar":
                 # Client "Find similar" button: run a product search like the selected result
                 title = (message.get("title") or "").strip() or "similar products"

@@ -630,7 +630,7 @@ class AgentToolsMixin:
     # Navigation tools (client-side: agent sends commands, client renders)
     # -------------------------------------------------------------------------
 
-    async def _send_nav_command(self, context: RunContext, action: str, url: str = "") -> bool:
+    async def _send_nav_command(self, context: RunContext, action: str, **kwargs) -> bool:
         """Send a navigation command to the client via data channel."""
         room = (
             get_current_room()
@@ -639,9 +639,7 @@ class AgentToolsMixin:
         )
         if not room:
             return False
-        msg: Dict[str, Any] = {"type": "nav_command", "action": action}
-        if url:
-            msg["url"] = url
+        msg: Dict[str, Any] = {"type": "nav_command", "action": action, **kwargs}
         await room.local_participant.publish_data(
             json.dumps(msg).encode("utf-8"), reliable=True
         )
@@ -657,7 +655,7 @@ class AgentToolsMixin:
         """
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
-        ok = await self._send_nav_command(context, "navigate", url)
+        ok = await self._send_nav_command(context, "navigate", url=url)
         if not ok:
             return "Cannot open browser: no room connection available."
         logger.info("Sent navigate command to client: %s", url[:80])
@@ -686,6 +684,73 @@ class AgentToolsMixin:
         if not ok:
             return "Cannot send command: no room connection."
         return "Browser closed."
+
+    @function_tool()
+    async def click_in_navigation(self, context: RunContext, element_description: str) -> str:
+        """Click an element on the page currently open in the navigation window.
+        Describe the element you want to click (e.g. 'first video', 'search button', 'Sign in').
+
+        Args:
+            element_description: Description of the element to click.
+        """
+        ok = await self._send_nav_command(context, "click", description=element_description)
+        if not ok:
+            return "Cannot send command: no room connection."
+        return f"Clicking on '{element_description}' for the user."
+
+    @function_tool()
+    async def type_in_navigation(
+        self, context: RunContext, text: str, field_description: str = ""
+    ) -> str:
+        """Type text into a field on the page currently open in the navigation window.
+
+        Args:
+            text: The text to type.
+            field_description: Optional description of which field to type into (e.g. 'search box'). If empty, types into the currently focused field.
+        """
+        ok = await self._send_nav_command(
+            context, "type", inputText=text, description=field_description
+        )
+        if not ok:
+            return "Cannot send command: no room connection."
+        return f"Typing '{text}'" + (f" in '{field_description}'" if field_description else "")
+
+    @function_tool()
+    async def press_key_in_navigation(self, context: RunContext, key: str) -> str:
+        """Press a keyboard key on the navigation page (e.g. Enter to submit a search).
+
+        Args:
+            key: Key to press (e.g. 'Enter', 'Tab', 'Escape').
+        """
+        ok = await self._send_nav_command(context, "press_key", description=key)
+        if not ok:
+            return "Cannot send command: no room connection."
+        return f"Pressed '{key}'."
+
+    @function_tool()
+    async def scroll_navigation(self, context: RunContext, direction: str = "down") -> str:
+        """Scroll the navigation page up or down.
+
+        Args:
+            direction: 'up' or 'down'.
+        """
+        ok = await self._send_nav_command(context, "scroll", description=direction)
+        if not ok:
+            return "Cannot send command: no room connection."
+        return f"Scrolled {direction}."
+
+    @function_tool()
+    async def read_navigation_page(self, context: RunContext) -> str:
+        """Read the content of the page currently open in the navigation window.
+        Returns the page text and interactive elements. Use this to understand what is on the page."""
+        ok = await self._send_nav_command(context, "read_page")
+        if not ok:
+            return "Cannot send command: no room connection."
+        # The client will send page content back via nav_page_content data message.
+        # For now, tell the LLM to wait for it or use cached context.
+        if hasattr(self, "_last_nav_page_content") and self._last_nav_page_content:
+            return self._last_nav_page_content
+        return "Requested page content from the navigation window. It will arrive shortly."
 
     # -------------------------------------------------------------------------
     # Search result management

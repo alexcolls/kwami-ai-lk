@@ -156,12 +156,14 @@ class KwamiAgent(Agent, AgentToolsMixin):
 
         # Navigation guidance
         prompt_parts.append(
-            "\nYou can open websites for the user with navigate_to. The page opens directly "
-            "in the user's browser so they can see and interact with it themselves (click, "
-            "scroll, type). You control navigation: open URLs, go back/forward, close. "
-            "Guide the user: tell them what you opened and suggest what they can do on the "
-            "page. Use go_back_in_browser and go_forward_in_browser for history navigation. "
-            "Use close_navigation when the user is done browsing."
+            "\nYou can browse the web for the user. Use navigate_to to open a website. "
+            "The page opens in the user's browser and you can see its content. "
+            "Use read_navigation_page to see what is on the page, then use "
+            "click_in_navigation to click elements (e.g. 'first video', 'search button'), "
+            "type_in_navigation to type text, press_key_in_navigation for keys like Enter, "
+            "and scroll_navigation to scroll. You receive page content automatically after "
+            "each navigation. Describe what you see and what you're doing so the user can "
+            "follow along. Use close_navigation when done."
         )
 
         # Memory context injection
