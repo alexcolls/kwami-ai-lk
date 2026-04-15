@@ -15,6 +15,12 @@ if TYPE_CHECKING:
 
 # Template ID prefix for Kwami context templates
 TEMPLATE_PREFIX = "kwami-context"
+MAX_CONTEXT_BLOCK_CHARS = 2200
+MAX_SUMMARY_CHARS = 600
+MAX_FACTS = 8
+MAX_FACT_CHARS = 180
+MAX_ENTITIES = 6
+MAX_ENTITY_SUMMARY_CHARS = 120
 
 # Default context template definition
 # Uses Zep template variables for structured retrieval
@@ -54,16 +60,16 @@ class MemoryContext:
         """
         # Prefer the template-generated context block
         if self.context_block:
-            return self.context_block
+            return self.context_block[:MAX_CONTEXT_BLOCK_CHARS]
 
         # Fallback: manually format from components
         parts = []
 
         if self.summary:
-            parts.append(f"## Conversation Summary\n{self.summary}")
+            parts.append(f"## Conversation Summary\n{self.summary[:MAX_SUMMARY_CHARS]}")
 
         if self.facts:
-            facts_text = "\n".join(f"- {fact}" for fact in self.facts)
+            facts_text = "\n".join(f"- {fact[:MAX_FACT_CHARS]}" for fact in self.facts[:MAX_FACTS])
             parts.append(
                 "## Known Facts About the Human User\n"
                 "These facts are about the HUMAN you are talking to "
@@ -75,8 +81,9 @@ class MemoryContext:
 
         if self.entities:
             entities_text = "\n".join(
-                f"- {e.get('name', 'Unknown')}: {e.get('summary', e.get('type', 'entity'))}"
-                for e in self.entities
+                f"- {str(e.get('name', 'Unknown'))[:60]}: "
+                f"{str(e.get('summary', e.get('type', 'entity')))[:MAX_ENTITY_SUMMARY_CHARS]}"
+                for e in self.entities[:MAX_ENTITIES]
             )
             parts.append(f"## Relevant Entities\n{entities_text}")
 

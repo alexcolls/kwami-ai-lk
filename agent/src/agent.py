@@ -11,6 +11,7 @@ from .utils.logging import get_logger
 from .utils.room import should_disconnect_as_duplicate
 
 logger = get_logger("agent")
+MAX_SYSTEM_MEMORY_CONTEXT_CHARS = 2200
 
 
 class KwamiAgent(Agent, AgentToolsMixin):
@@ -200,7 +201,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
                 "You have persistent memory of past conversations with this user."
             )
             prompt_parts.append("Use this context to provide personalized responses:\n")
-            prompt_parts.append(memory_context)
+            prompt_parts.append(memory_context[:MAX_SYSTEM_MEMORY_CONTEXT_CHARS])
 
         return "\n".join(prompt_parts)
 
@@ -272,7 +273,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
             greeting_instructions = await self._build_greeting_instructions()
             self.session.generate_reply(
                 instructions=greeting_instructions,
-                allow_interruptions=False,
+                allow_interruptions=True,
             )
         except Exception as e:
             logger.error(f"Failed to generate greeting: {e}")
@@ -280,7 +281,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
             try:
                 self.session.generate_reply(
                     instructions="Greet the user casually and ask how you can help.",
-                    allow_interruptions=False,
+                    allow_interruptions=True,
                 )
             except Exception:
                 logger.error("Failed to generate fallback greeting")
