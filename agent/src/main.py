@@ -122,29 +122,13 @@ async def entrypoint(ctx: JobContext) -> None:
                     message.get("result"),
                     message.get("error"),
                 )
-            elif msg_type == "nav_page_content":
+            elif msg_type == "browser_close_request":
+                # Frontend user clicked the browser panel close button
                 if state.current_agent:
-                    title = message.get("title", "")
-                    text = message.get("text", "")
-                    elements = message.get("elements", [])
-                    html = message.get("html", "")
-                    el_summary = "\n".join(
-                        f"  - {e.get('id', '')} [{e.get('type')}] {e.get('label', '')}"
-                        for e in elements[:30]
-                    )
-                    content = f"Page: {title}\n\nContent:\n{text[:1200]}"
-                    if el_summary:
-                        content += f"\n\nInteractive elements (use element id to click):\n{el_summary}"
-                    if html:
-                        content += f"\n\nHTML snippet:\n{html[:3000]}"
-                    state.current_agent._last_nav_page_content = content
-                    logger.info("Cached nav page content: %s (%d chars)", title[:50], len(content))
-
-            elif msg_type == "nav_command_result":
-                if state.current_agent:
-                    result = message.get("result", "")
-                    state.current_agent._last_nav_command_result = result
-                    logger.info("Nav command result: %s", result)
+                    browser_session = getattr(state.current_agent, "_browser_session", None)
+                    if browser_session and browser_session.is_active:
+                        asyncio.create_task(browser_session.close())
+                        logger.info("Closing cloud browser per user request")
 
             elif msg_type == "search_similar":
                 # Client "Find similar" button: run a product search like the selected result

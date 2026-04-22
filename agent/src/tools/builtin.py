@@ -676,27 +676,26 @@ class AgentToolsMixin:
         return "No results found."
 
     # -------------------------------------------------------------------------
-    # Navigation tools (client-side: agent sends commands, client renders)
+    # Navigation tools (cloud browser via Browser Use Cloud + CDP)
     # -------------------------------------------------------------------------
 
-    async def _send_nav_command(self, context: RunContext, action: str, **kwargs) -> bool:
-        """Send a navigation command to the client via data channel."""
-        room = (
-            get_current_room()
-            or (getattr(context, "room", None) if context else None)
-            or self.room
-        )
-        if not room:
-            return False
-        msg: Dict[str, Any] = {"type": "nav_command", "action": action, **kwargs}
-        await room.local_participant.publish_data(
-            json.dumps(msg).encode("utf-8"), reliable=True
-        )
-        return True
+    async def _get_browser_session(self):
+        """Get or create the cloud browser session for this agent."""
+        from ..browser import CloudBrowserSession
+
+        if not hasattr(self, "_browser_session") or self._browser_session is None:
+            room = get_current_room() or self.room
+            self._browser_session = CloudBrowserSession(room=room)
+        elif self._browser_session._room is None:
+            room = get_current_room() or self.room
+            if room:
+                self._browser_session.set_room(room)
+        return self._browser_session
 
     @function_tool()
     async def navigate_to(self, context: RunContext, url: str) -> str:
-        """Open a website for the user. The page opens directly in their browser so they can interact with it.
+        """Open a website for the user. The page opens in a live browser panel embedded in the app.
+        The user can see and interact with the browser in real time.
         Use this when the user asks you to open, go to, visit, or browse a website.
 
         Args:
@@ -704,37 +703,62 @@ class AgentToolsMixin:
         """
         if not url.startswith(("http://", "https://")):
             url = f"https://{url}"
-        self._last_nav_page_content = ""
-        ok = await self._send_nav_command(context, "navigate", url=url)
-        if not ok:
-            return "Cannot open browser: no room connection available."
-        logger.info("Sent navigate command to client: %s", url[:80])
-        return f"Opening {url} for the user. They can interact with the page directly."
+
+        session = await self._get_browser_session()
+
+        # Determine user_id for the browser profile
+        user_id = getattr(self.kwami_config, "kwami_id", None) or "anonymous"
+
+        try:
+            if session.is_active:
+                result = await session.navigate(url)
+            else:
+                await session.start(user_id=user_id, url=url)
+                result = f"Opening {url}. The user can see and interact with the page in the browser panel."
+        except ValueError as e:
+            return f"Cannot open browser: {e}"
+        except Exception as e:
+            logger.exception("Failed to open cloud browser")
+            return f"Failed to open browser: {e}"
+
+        logger.info("Cloud browser navigated to: %s", url[:80])
+        return result
 
     @function_tool()
     async def go_back_in_browser(self, context: RunContext) -> str:
-        """Go back to the previous page in the user's navigation window."""
-        ok = await self._send_nav_command(context, "back")
-        if not ok:
-            return "Cannot send command: no room connection."
-        return "Going back to the previous page."
+        """Go back to the previous page in the browser."""
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        try:
+            return await session.go_back()
+        except Exception as e:
+            return f"Failed to go back: {e}"
 
     @function_tool()
     async def go_forward_in_browser(self, context: RunContext) -> str:
-        """Go forward to the next page in the user's navigation window."""
-        ok = await self._send_nav_command(context, "forward")
-        if not ok:
-            return "Cannot send command: no room connection."
-        return "Going forward to the next page."
+        """Go forward to the next page in the browser."""
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        try:
+            return await session.go_forward()
+        except Exception as e:
+            return f"Failed to go forward: {e}"
 
     @function_tool()
     async def close_navigation(self, context: RunContext) -> str:
-        """Close the user's navigation window. Use when the user is done browsing or asks to close/stop navigation."""
-        self._last_nav_page_content = ""
-        ok = await self._send_nav_command(context, "close")
-        if not ok:
-            return "Cannot send command: no room connection."
-        return "Browser closed."
+        """Close the browser. Use when the user is done browsing or asks to close/stop navigation.
+        This saves the user's login state for next time."""
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is currently open."
+        try:
+            await session.close()
+            return "Browser closed. Login state has been saved for next time."
+        except Exception as e:
+            logger.warning("Failed to close browser: %s", e)
+            return "Browser closed."
 
     @function_tool()
     async def click_in_navigation(
@@ -743,26 +767,25 @@ class AgentToolsMixin:
         element_description: str = "",
         element_id: str = "",
     ) -> str:
-        """Click an element on the page currently open in the navigation window.
-        Use the page content (from read_navigation_page) to see the HTML and the list of interactive elements with ids (el-0, el-1, ...). Prefer element_id when you can identify the exact element from the list (e.g. element_id='el-5' for the 6th element). Otherwise use element_description (e.g. 'search button', 'first video', 'Sign in').
+        """Click an element on the page currently open in the browser.
+        Use the page content (from read_navigation_page) to see interactive elements with ids
+        (el-0, el-1, ...) and their coordinates. Prefer element_id for precise clicks.
 
         Args:
-            element_description: Description of the element to click (e.g. 'search button', 'first video'). Use when element_id is not set.
-            element_id: Exact element id from the page content list (e.g. 'el-5'). Use when you have read the page and know which id to click.
+            element_description: Description of the element to click (e.g. 'search button', 'first video').
+            element_id: Exact element id from the page content list (e.g. 'el-5').
         """
-        kwargs = {}
-        if element_id and element_id.strip().startswith("el-"):
-            kwargs["element_id"] = element_id.strip()
-        if element_description and element_description.strip():
-            kwargs["description"] = element_description.strip()
-        if not kwargs:
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        eid = element_id.strip() if element_id else ""
+        desc = element_description.strip() if element_description else ""
+        if not eid and not desc:
             return "Specify either element_description or element_id."
-        ok = await self._send_nav_command(context, "click", **kwargs)
-        if not ok:
-            return "Cannot send command: no room connection."
-        if kwargs.get("element_id"):
-            return f"Clicking element {kwargs['element_id']} for the user."
-        return f"Clicking on '{kwargs.get('description', '')}' for the user."
+        try:
+            return await session.click(element_id=eid, description=desc)
+        except Exception as e:
+            return f"Failed to click: {e}"
 
     @function_tool()
     async def type_in_navigation(
@@ -773,72 +796,67 @@ class AgentToolsMixin:
         element_id: str = "",
         clear_first: bool = True,
     ) -> str:
-        """Type text into a field on the page currently open in the navigation window.
+        """Type text into a field on the page currently open in the browser.
 
         Args:
             text: The text to type.
-            field_description: Optional description of which field to type into (e.g. 'search box'). If empty, types into the currently focused field.
-            element_id: Exact element id from read_navigation_page (e.g. 'el-3'). Preferred when you know the id.
+            field_description: Description of the field (e.g. 'search box'). If empty, types into the focused field.
+            element_id: Exact element id from read_navigation_page (e.g. 'el-3').
             clear_first: If True (default), clears the field before typing. Set False to append.
         """
-        desc = field_description
-        if clear_first:
-            desc = f"__clear__{desc}"
-        kwargs: Dict[str, Any] = {"inputText": text, "description": desc}
-        if element_id and element_id.strip().startswith("el-"):
-            kwargs["element_id"] = element_id.strip()
-        ok = await self._send_nav_command(context, "type", **kwargs)
-        if not ok:
-            return "Cannot send command: no room connection."
-        parts = [f"Typing '{text}'"]
-        if element_id:
-            parts.append(f"in element {element_id}")
-        elif field_description:
-            parts.append(f"in '{field_description}'")
-        return " ".join(parts)
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        eid = element_id.strip() if element_id else ""
+        desc = field_description.strip() if field_description else ""
+        try:
+            return await session.type_text(text, element_id=eid, description=desc, clear_first=clear_first)
+        except Exception as e:
+            return f"Failed to type: {e}"
 
     @function_tool()
     async def press_key_in_navigation(self, context: RunContext, key: str) -> str:
-        """Press a keyboard key on the navigation page (e.g. Enter to submit a search).
+        """Press a keyboard key on the page (e.g. Enter to submit a search).
 
         Args:
             key: Key to press (e.g. 'Enter', 'Tab', 'Escape').
         """
-        ok = await self._send_nav_command(context, "press_key", description=key)
-        if not ok:
-            return "Cannot send command: no room connection."
-        return f"Pressed '{key}'."
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        try:
+            return await session.press_key(key)
+        except Exception as e:
+            return f"Failed to press key: {e}"
 
     @function_tool()
     async def scroll_navigation(self, context: RunContext, direction: str = "down") -> str:
-        """Scroll the navigation page up or down.
+        """Scroll the page up or down.
 
         Args:
             direction: 'up' or 'down'.
         """
-        ok = await self._send_nav_command(context, "scroll", description=direction)
-        if not ok:
-            return "Cannot send command: no room connection."
-        return f"Scrolled {direction}."
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        try:
+            return await session.scroll(direction)
+        except Exception as e:
+            return f"Failed to scroll: {e}"
 
     @function_tool()
     async def read_navigation_page(self, context: RunContext) -> str:
-        """Read the content of the page currently open in the navigation window.
-        Returns the page title, main text, a list of interactive elements with ids (el-0, el-1, ...), and the HTML structure so you see what the user sees. Use this to decide what to click; then use click_in_navigation with element_id='el-N' for precise clicks."""
-        prev = getattr(self, "_last_nav_page_content", "") or ""
-        self._last_nav_page_content = ""
-        ok = await self._send_nav_command(context, "read_page")
-        if not ok:
-            return "Cannot send command: no room connection."
-        for _ in range(10):
-            await asyncio.sleep(0.3)
-            content = getattr(self, "_last_nav_page_content", "") or ""
-            if content:
-                return content
-        if prev:
-            self._last_nav_page_content = prev
-            return prev
-        return "Page content not available yet. The page may still be loading — try again in a moment."
+        """Read the content of the page currently open in the browser.
+        Returns the page title, main text, and a list of interactive elements with ids (el-0, el-1, ...)
+        and their coordinates. Use this to decide what to click; then use click_in_navigation
+        with element_id='el-N' for precise clicks."""
+        session = await self._get_browser_session()
+        if not session.is_active:
+            return "No browser is open. Use navigate_to first."
+        try:
+            return await session.read_page()
+        except Exception as e:
+            return f"Failed to read page: {e}"
 
     # -------------------------------------------------------------------------
     # Search result management

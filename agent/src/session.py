@@ -161,6 +161,16 @@ class SessionState:
             await asyncio.gather(*self._cleanup_tasks, return_exceptions=True)
             self._cleanup_tasks.clear()
         
+        # Close current agent's cloud browser session (persists profile cookies, stops billing)
+        if self.current_agent:
+            browser_session = getattr(self.current_agent, "_browser_session", None)
+            if browser_session and browser_session.is_active:
+                try:
+                    await browser_session.close()
+                    logger.info("Closed cloud browser session during cleanup")
+                except Exception as e:
+                    logger.warning("Failed to close cloud browser on cleanup: %s", e)
+
         # Close current agent's voice pipeline and memory
         if self.current_agent:
             await self._cleanup_agent_voice_pipeline(self.current_agent)

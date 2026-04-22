@@ -56,6 +56,7 @@ class KwamiAgent(Agent, AgentToolsMixin):
         self._current_voice_config = self.kwami_config.voice
         self.room = None  # Will be set in on_enter
         self.usage_tracker = None
+        self._browser_session = None  # Cloud browser session (lazy-created by navigate_to)
 
         # Initialize client tool manager
         self.client_tools = ClientToolManager(self)
@@ -185,12 +186,15 @@ class KwamiAgent(Agent, AgentToolsMixin):
         # Navigation guidance
         prompt_parts.append(
             "\nYou can browse the web for the user. Use navigate_to to open a website. "
-            "The page opens in the user's browser and you can see its content. "
-            "Use read_navigation_page to see what is on the page, then use "
-            "click_in_navigation to click elements (e.g. 'first video', 'search button'), "
+            "The page opens in a live browser panel embedded in the app — the user sees "
+            "everything you do in real time and can interact with the browser directly. "
+            "Use read_navigation_page to see page content and interactive elements, then "
+            "click_in_navigation to click elements (prefer element_id like 'el-5'), "
             "type_in_navigation to type text, press_key_in_navigation for keys like Enter, "
-            "and scroll_navigation to scroll. You receive page content automatically after "
-            "each navigation. Describe what you see and what you're doing so the user can "
+            "and scroll_navigation to scroll. The user's login state persists across sessions "
+            "(cookies are saved). If you navigate to a site where the user needs to log in, "
+            "tell them they can log in directly in the browser panel and their session will be "
+            "saved for next time. Describe what you see and what you're doing so the user can "
             "follow along. Use close_navigation when done."
         )
 
