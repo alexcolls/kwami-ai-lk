@@ -263,16 +263,18 @@ async def update_voice(
     if provider_changed:
         logger.info(f"Auto-detected provider change: {current_provider} -> {new_provider}")
     
-    # ElevenLabs doesn't support speed updates via update_options, requires agent recreation
-    # Only trigger if speed actually changed from current value
+    # Some providers don't support live speed updates via update_options and need agent recreation.
+    # Only trigger recreation if speed actually changed from current value.
+    recreate_on_speed_change_providers = {"elevenlabs", "rime"}
+    requires_recreate_for_speed = current_provider in recreate_on_speed_change_providers
     is_elevenlabs = current_provider == "elevenlabs"
     current_speed = agent.kwami_config.voice.tts_speed or 1.0
     new_speed = config.get("tts_speed")
     speed_actually_changed = new_speed is not None and float(new_speed) != float(current_speed)
-    speed_changed = speed_actually_changed and is_elevenlabs
+    speed_changed = speed_actually_changed and requires_recreate_for_speed
     
     if provider_changed or speed_changed:
-        reason = "provider change" if provider_changed else "speed change (ElevenLabs)"
+        reason = "provider change" if provider_changed else f"speed change ({current_provider})"
         logger.info(f"Switching TTS: {current_provider} -> {new_provider} ({reason})")
         
         # Full agent switch needed for provider change
